@@ -38,11 +38,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: bin/rbwr-demands
-          key: app-${{ runner.os }}-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'src/**', 'public/**') }}
-      - name: Build the app
+          key: server-${{ runner.os }}-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'build.rs', 'src/**', 'public/**') }}
+      - name: Build the app (server only, no window)
         if: steps.bin.outputs.cache-hit != 'true'
         run: |
-          cargo build --release
+          cargo build --release --no-default-features
           mkdir -p bin
           cp target/release/rbwr-demands bin/
       - name: Export site and data snapshot

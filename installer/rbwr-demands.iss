@@ -1,10 +1,10 @@
 ; Windows installer for RBWR Demands (Inno Setup 6).
 ; Built by .github/workflows/release.yml after the app itself:
-;   iscc /DAppVersion=1.1.0 installer\rbwr-demands.iss
+;   iscc /DAppVersion=1.2.0 installer\rbwr-demands.iss
 ; Installs for the current user only, so no administrator rights are needed.
 
 #ifndef AppVersion
-  #define AppVersion "1.1.0"
+  #define AppVersion "1.2.0"
 #endif
 
 [Setup]

@@ -1,13 +1,20 @@
-//! RBWR Demands – local web app.
+//! RBWR Demands – desktop app.
 //!
 //! Serves the board (the `public/` folder, embedded into the program at build
 //! time) and proxies the public RBWR server API at `/api/servers`, because
 //! browsers aren't allowed to call that API directly (it sends no CORS
 //! headers). Upstream is asked at most once per `CACHE_SECONDS`, however many
-//! tabs are open.
+//! windows are open.
+//!
+//! With the `desktop` feature (default) the board opens in the app's own
+//! window; `--browser` uses the default browser instead, and hosts
+//! (`SERVER_PORT` set) run without any window.
 //!
 //! `--export DIR` writes the site plus a data snapshot to `DIR` instead; the
 //! GitHub Pages workflow uses that.
+
+// No black console window behind the app window on Windows.
+#![cfg_attr(all(windows, feature = "desktop"), windows_subsystem = "windows")]
 
 use std::env;
 use std::fs;
@@ -44,7 +51,8 @@ Usage: rbwr-demands [options]
 
   --port N        Port to use (default 3000, or the next free one)
   --lan           Also reachable from other devices on your network (phone, tablet)
-  --no-browser    Don't open the browser automatically
+  --browser       Open the board in your browser instead of the app window
+  --no-browser    No window and no browser: just run the server
   --demo          Open the board with demo data
   --export DIR    Write the website and a data snapshot to DIR, then exit
   -h, --help      Show this help
@@ -54,13 +62,24 @@ Environment: PORT / SERVER_PORT, HOST, CACHE_SECONDS, UPSTREAM_URLS (comma-separ
 
 // ---- configuration -----------------------------------------------------------
 
+/// Where the board is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ui {
+    /// The app's own window (needs the `desktop` feature).
+    Window,
+    /// The default web browser.
+    Browser,
+    /// Nothing: server only.
+    None,
+}
+
 #[derive(Debug, Clone)]
 struct Config {
     host: String,
     port: u16,
     fixed_port: bool,
     lan: bool,
-    open_browser: bool,
+    ui: Ui,
     demo: bool,
     export: Option<PathBuf>,
     cache_ttl: Duration,
@@ -76,7 +95,13 @@ fn parse_config(args: &[String], var: impl Fn(&str) -> Option<String>) -> Result
         port: DEFAULT_PORT,
         fixed_port: false,
         lan: false,
-        open_browser: !hosted,
+        ui: if hosted {
+            Ui::None
+        } else if cfg!(feature = "desktop") {
+            Ui::Window
+        } else {
+            Ui::Browser
+        },
         demo: false,
         export: None,
         cache_ttl: Duration::from_secs(
@@ -103,7 +128,8 @@ fn parse_config(args: &[String], var: impl Fn(&str) -> Option<String>) -> Result
                 cfg.lan = true;
                 cfg.host = "0.0.0.0".into();
             }
-            "--no-browser" => cfg.open_browser = false,
+            "--browser" => cfg.ui = Ui::Browser,
+            "--no-browser" | "--no-window" => cfg.ui = Ui::None,
             "--demo" => cfg.demo = true,
             "--export" => cfg.export = Some(PathBuf::from(it.next().ok_or("--export needs a folder")?)),
             "-h" | "--help" => return Err(HELP.into()),
@@ -408,6 +434,7 @@ fn export(app: &App, out: &Path) -> Result<(), String> {
 /// On Windows a double-clicked program closes its window right away; keep
 /// error messages readable.
 fn fail(msg: &str) -> ! {
+    show_console();
     eprintln!("\n{msg}");
     if std::io::stdin().is_terminal() {
         eprint!("\nPress Enter to close.");
@@ -417,15 +444,128 @@ fn fail(msg: &str) -> ! {
     process::exit(1);
 }
 
+/// The app is built without a console on Windows; give it one when there is
+/// something to read (browser mode, errors).
+#[cfg(all(windows, feature = "desktop"))]
+fn show_console() {
+    // SAFETY: plain Win32 call without arguments; failing (e.g. a console
+    // already exists) is harmless.
+    unsafe {
+        windows_sys::Win32::System::Console::AllocConsole();
+    }
+}
+
+#[cfg(not(all(windows, feature = "desktop")))]
+fn show_console() {}
+
+#[cfg(feature = "desktop")]
+mod desktop {
+    //! The app window: a native window with a web view showing the board.
+
+    use tao::dpi::LogicalSize;
+    use tao::event::{Event, WindowEvent};
+    use tao::event_loop::{ControlFlow, EventLoop};
+    use tao::window::{Icon, WindowBuilder};
+    use wry::{NewWindowResponse, WebContext, WebViewBuilder};
+
+    static ICON_RGBA: &[u8] = include_bytes!("../assets/icon-64.rgba");
+
+    /// Opens the window and runs until it is closed (then the process ends).
+    /// Returns only if the window can't be created.
+    pub fn run(url: &str, home: &str, title: &str) -> Result<(), String> {
+        let event_loop = EventLoop::new();
+        let window = WindowBuilder::new()
+            .with_title(title)
+            .with_inner_size(LogicalSize::new(1320.0, 900.0))
+            .with_min_inner_size(LogicalSize::new(380.0, 480.0))
+            .with_window_icon(Icon::from_rgba(ICON_RGBA.to_vec(), 64, 64).ok())
+            .build(&event_loop)
+            .map_err(|e| e.to_string())?;
+
+        // Keep the web view's storage (pinned servers, sort order) in one
+        // place per user, not next to wherever the program file lives.
+        let data_dir = std::env::var_os("LOCALAPPDATA")
+            .or_else(|| std::env::var_os("XDG_DATA_HOME"))
+            .map(|base| std::path::PathBuf::from(base).join("RBWR Demands"));
+        let mut context = WebContext::new(data_dir);
+
+        // Links that leave the board (Join, Roblox, GitHub) open in the
+        // normal browser, so Roblox can start the game.
+        let home = home.to_string();
+        let builder = WebViewBuilder::new_with_web_context(&mut context)
+            .with_url(url)
+            .with_navigation_handler(move |target| {
+                if target.starts_with(&home) || target.starts_with("about:") {
+                    true
+                } else {
+                    let _ = webbrowser::open(&target);
+                    false
+                }
+            })
+            .with_new_window_req_handler(|target, _| {
+                let _ = webbrowser::open(&target);
+                NewWindowResponse::Deny
+            });
+
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        let webview = builder.build(&window).map_err(|e| e.to_string())?;
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        let webview = {
+            use tao::platform::unix::WindowExtUnix;
+            use wry::WebViewBuilderExtUnix;
+            let vbox = window.default_vbox().ok_or("no GTK container for the web view")?;
+            builder.build_gtk(vbox).map_err(|e| e.to_string())?
+        };
+
+        event_loop.run(move |event, _, control_flow| {
+            let _keep_alive = (&window, &webview, &context);
+            *control_flow = ControlFlow::Wait;
+            if let Event::WindowEvent { event: WindowEvent::CloseRequested, .. } = event {
+                *control_flow = ControlFlow::Exit;
+            }
+        })
+    }
+}
+
+fn open_in_browser(url: &str) {
+    if webbrowser::open(url).is_err() {
+        println!("Couldn't open the browser. Open {url} yourself.");
+    }
+}
+
+/// Shows the board at `url` the way the config asks for. Returns only when
+/// there's no window to wait for.
+fn show(cfg: &Config, url: &str, home: &str, title: &str) {
+    match cfg.ui {
+        Ui::Window => {
+            #[cfg(feature = "desktop")]
+            if let Err(e) = desktop::run(url, home, title) {
+                show_console();
+                eprintln!("Couldn't open the app window ({e}). Using your browser instead.");
+                open_in_browser(url);
+            }
+            #[cfg(not(feature = "desktop"))]
+            {
+                let _ = (home, title);
+                open_in_browser(url);
+            }
+        }
+        Ui::Browser => open_in_browser(url),
+        Ui::None => {}
+    }
+}
+
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     let cfg = match parse_config(&args, |k| env::var(k).ok()) {
         Ok(cfg) => cfg,
         Err(msg) if msg == HELP => {
+            show_console();
             print!("{HELP}");
             return;
         }
         Err(msg) => {
+            show_console();
             eprintln!("{msg}");
             process::exit(2);
         }
@@ -441,48 +581,18 @@ fn main() {
         return;
     }
 
+    let query = if cfg.demo { "?demo" } else { "" };
+
+    // Already running (shortcut clicked twice)? Just show that one.
     if !cfg.fixed_port && cfg.host == "127.0.0.1" {
-        if let Some(url) = already_running(cfg.port) {
-            println!("RBWR Demands is already running at {url}");
-            if cfg.open_browser {
-                let url = if cfg.demo { format!("{url}?demo") } else { url };
-                let _ = webbrowser::open(&url);
-            }
+        if let Some(home) = already_running(cfg.port) {
+            show(&cfg, &format!("{home}{query}"), &home, "RBWR Demands");
             return;
         }
     }
 
     let (server, port) = bind(&cfg).unwrap_or_else(|e| fail(&format!("Could not start the web server. {e}")));
     let server = Arc::new(server);
-
-    // Warm the cache so the first page load is quick.
-    {
-        let app = Arc::clone(&app);
-        thread::spawn(move || {
-            let _ = app.servers();
-        });
-    }
-
-    let local = format!("http://localhost:{port}/");
-    println!("RBWR Demands {} is running.", env!("CARGO_PKG_VERSION"));
-    println!();
-    println!("  On this computer:  {local}");
-    if cfg.host == "0.0.0.0" {
-        if let Some(ip) = lan_ip() {
-            println!("  On your network:   http://{ip}:{port}/");
-        }
-    } else {
-        println!("  (Start with --lan to open it on your phone too.)");
-    }
-    println!();
-    println!("Close this window or press Ctrl+C to stop.");
-
-    if cfg.open_browser {
-        let url = if cfg.demo { format!("{local}?demo") } else { local.clone() };
-        if webbrowser::open(&url).is_err() {
-            println!("Couldn't open the browser. Open {url} yourself.");
-        }
-    }
 
     let workers: Vec<_> = (0..WORKERS)
         .map(|_| {
@@ -499,6 +609,43 @@ fn main() {
             })
         })
         .collect();
+
+    // Warm the cache so the first page load is quick.
+    {
+        let app = Arc::clone(&app);
+        thread::spawn(move || {
+            let _ = app.servers();
+        });
+    }
+
+    // 127.0.0.1 rather than "localhost", which may resolve to IPv6 first.
+    let home = format!("http://127.0.0.1:{port}/");
+    let lan = if cfg.host == "0.0.0.0" { lan_ip().map(|ip| format!("http://{ip}:{port}/")) } else { None };
+
+    if cfg.ui == Ui::Window {
+        let title = match &lan {
+            Some(lan) => format!("RBWR Demands (on your phone: {lan})"),
+            None => "RBWR Demands".to_string(),
+        };
+        show(&cfg, &format!("{home}{query}"), &home, &title);
+    } else if cfg.ui == Ui::Browser {
+        show_console();
+    }
+
+    // Browser or server-only mode (or the window couldn't be opened).
+    println!("RBWR Demands {} is running.", env!("CARGO_PKG_VERSION"));
+    println!();
+    println!("  On this computer:  http://localhost:{port}/");
+    match &lan {
+        Some(lan) => println!("  On your network:   {lan}"),
+        None => println!("  (Start with --lan to open it on your phone too.)"),
+    }
+    println!();
+    println!("Close this window or press Ctrl+C to stop.");
+    if cfg.ui == Ui::Browser {
+        show(&cfg, &format!("{home}{query}"), &home, "RBWR Demands");
+    }
+
     for w in workers {
         let _ = w.join();
     }
@@ -535,12 +682,12 @@ mod tests {
     }
 
     #[test]
-    fn defaults_are_local_with_browser() {
+    fn defaults_are_local_with_a_window() {
         let c = cfg(&[], &[]).unwrap();
         assert_eq!(c.host, "127.0.0.1");
         assert_eq!(c.port, 3000);
         assert!(!c.fixed_port);
-        assert!(c.open_browser);
+        assert_eq!(c.ui, if cfg!(feature = "desktop") { Ui::Window } else { Ui::Browser });
         assert_eq!(c.cache_ttl, Duration::from_secs(15));
         assert_eq!(c.upstreams.len(), 2);
     }
@@ -548,10 +695,11 @@ mod tests {
     #[test]
     fn options_and_environment() {
         let c = cfg(&["--lan", "--port", "8080", "--no-browser", "--demo"], &[]).unwrap();
-        assert_eq!((c.host.as_str(), c.port, c.fixed_port, c.open_browser, c.demo), ("0.0.0.0", 8080, true, false, true));
+        assert_eq!((c.host.as_str(), c.port, c.fixed_port, c.ui, c.demo), ("0.0.0.0", 8080, true, Ui::None, true));
+        assert_eq!(cfg(&["--browser"], &[]).unwrap().ui, Ui::Browser);
 
         let hosted = cfg(&[], &[("SERVER_PORT", "25565"), ("CACHE_SECONDS", "1")]).unwrap();
-        assert_eq!((hosted.host.as_str(), hosted.port, hosted.open_browser), ("0.0.0.0", 25565, false));
+        assert_eq!((hosted.host.as_str(), hosted.port, hosted.ui), ("0.0.0.0", 25565, Ui::None));
         assert_eq!(hosted.cache_ttl, Duration::from_secs(5), "cache never below 5 s");
 
         let up = cfg(&[], &[("UPSTREAM_URLS", " https://a.example/x , ,https://b.example/y")]).unwrap();

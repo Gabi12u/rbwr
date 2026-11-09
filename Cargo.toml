@@ -1,6 +1,6 @@
 [package]
 name = "rbwr-demands"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
 description = "Live grid demands for every Realistic Boiling Water Reactor Simulator (RBWR) server, as a local web app."
 license = "MIT"
@@ -12,6 +12,18 @@ serde_json = "1"
 tiny_http = "0.12"
 ureq = { version = "2.12", default-features = false, features = ["tls", "native-certs", "gzip"] }
 webbrowser = "1"
+
+# Own app window (the "desktop" feature, on by default). Build with
+# --no-default-features for a server-only binary, e.g. for hosting or GitHub Pages.
+tao = { version = "0.37", optional = true }
+wry = { version = "0.57", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Console"], optional = true }
+
+[features]
+default = ["desktop"]
+desktop = ["dep:tao", "dep:wry", "dep:windows-sys"]
 
 [build-dependencies]
 winresource = "0.1"
