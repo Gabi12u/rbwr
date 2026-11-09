@@ -35,6 +35,7 @@ const DEFAULT_PORT: u16 = 3000;
 const PORT_TRIES: u16 = 10;
 const WORKERS: usize = 4;
 const USER_AGENT: &str = concat!("RBWR-Demands/", env!("CARGO_PKG_VERSION"));
+const APP_ID: &str = "rbwr-demands";
 
 const HELP: &str = "\
 RBWR Demands – live grid demands for every RBWR server
@@ -333,7 +334,7 @@ fn handle(app: &App, req: Request) {
                 }
                 Err(e) => respond_json(502, &json!({ "ok": false, "error": e, "now": now_ms() })),
             },
-            "/api/health" => respond_json(200, &json!({ "ok": true, "version": env!("CARGO_PKG_VERSION") })),
+            "/api/health" => respond_json(200, &json!({ "ok": true, "app": APP_ID, "version": env!("CARGO_PKG_VERSION") })),
             p if p.starts_with("/api/") => respond_json(404, &json!({ "ok": false, "error": "Unknown endpoint" })),
             p => match resolve(p) {
                 Some((data, ct)) => respond(200, ct, data.to_vec()),
@@ -342,6 +343,15 @@ fn handle(app: &App, req: Request) {
         }
     };
     let _ = req.respond(resp);
+}
+
+/// If RBWR Demands already runs on this port (e.g. the shortcut was clicked
+/// twice), returns its address so we can just open the browser there.
+fn already_running(port: u16) -> Option<String> {
+    let agent = ureq::AgentBuilder::new().timeout(Duration::from_millis(800)).build();
+    let text = agent.get(&format!("http://127.0.0.1:{port}/api/health")).call().ok()?.into_string().ok()?;
+    let body: Value = serde_json::from_str(&text).ok()?;
+    (body["app"] == APP_ID).then(|| format!("http://localhost:{port}/"))
 }
 
 fn bind(cfg: &Config) -> Result<(Server, u16), String> {
@@ -429,6 +439,17 @@ fn main() {
             process::exit(1);
         }
         return;
+    }
+
+    if !cfg.fixed_port && cfg.host == "127.0.0.1" {
+        if let Some(url) = already_running(cfg.port) {
+            println!("RBWR Demands is already running at {url}");
+            if cfg.open_browser {
+                let url = if cfg.demo { format!("{url}?demo") } else { url };
+                let _ = webbrowser::open(&url);
+            }
+            return;
+        }
     }
 
     let (server, port) = bind(&cfg).unwrap_or_else(|e| fail(&format!("Could not start the web server. {e}")));

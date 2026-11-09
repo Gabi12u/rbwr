@@ -38,15 +38,16 @@ Die API sendet **keine CORS-Header**, der Browser darf sie also nicht direkt abf
 
 ## Auf dem PC starten
 
-1. Die App für dein System holen:
-   - **Windows:** `rbwr-demands-windows-x64.exe`
-   - **macOS:** `rbwr-demands-macos-apple-silicon` (M1/M2/…) oder `rbwr-demands-macos-intel`
-   - **Linux:** `rbwr-demands-linux-x64`
+**Download:** https://github.com/Gabi12u/rbwr/releases/latest
 
-   Die Dateien baut der Workflow **„Build app"**: auf GitHub unter *Actions → Build app → Run workflow*, danach unten bei *Artifacts* herunterladen. Mit einem Tag wie `v1.0.0` landen sie automatisch in einem GitHub-Release.
-2. **Doppelklick.** Ein Fenster zeigt die Adresse, und der Browser öffnet `http://localhost:3000/`. Zum Beenden das Fenster schließen.
+- **Windows:** `RBWR-Demands-Setup.exe` herunterladen und starten. Der Installer braucht keine Admin-Rechte, legt einen Startmenü-Eintrag und ein Desktop-Symbol „RBWR Demands" an und startet die App am Ende. Deinstallieren über *Einstellungen → Apps*. Ohne Installation geht auch `rbwr-demands-windows-x64.exe` direkt per Doppelklick.
+- **macOS:** `rbwr-demands-macos-apple-silicon` (M1/M2/…) oder `rbwr-demands-macos-intel`; **Linux:** `rbwr-demands-linux-x64`. Vorher `chmod +x` ausführen, macOS beim ersten Mal per Rechtsklick → *Öffnen*.
 
-Windows warnt beim ersten Start evtl. („Der Computer wurde durch Windows geschützt"), weil die Datei nicht signiert ist: *Weitere Informationen → Trotzdem ausführen*. Auf macOS/Linux vorher `chmod +x` ausführen; macOS beim ersten Mal per Rechtsklick → *Öffnen* starten.
+Beim Start öffnet sich ein kleines Fenster mit der Adresse, und der Browser zeigt `http://localhost:3000/` mit Live-Daten. Zum Beenden das Fenster schließen. Ein zweiter Klick auf das Symbol öffnet nur den Browser, wenn die App schon läuft.
+
+Windows warnt beim ersten Start evtl. („Der Computer wurde durch Windows geschützt"), weil die Dateien nicht signiert sind: *Weitere Informationen → Trotzdem ausführen*. Passiert gar nichts, hat meist der Virenschutz die Datei blockiert: *Windows-Sicherheit → Viren- & Bedrohungsschutz → Schutzverlauf*, dort den Eintrag zu RBWR Demands öffnen und *Zulassen* wählen.
+
+Die Dateien baut der Workflow **„Build app"** automatisch, sobald sich die App in `main` ändert (oder per *Actions → Build app → Run workflow*).
 
 Optionen (z. B. über eine Verknüpfung oder im Terminal):
 
@@ -90,6 +91,8 @@ Solange `PAGES_LIVE` nicht gesetzt ist, wird jeder Lauf übersprungen und kostet
 
 ```
 src/main.rs          App: Webserver, API-Proxy mit Cache, Browser-Start, Export für GitHub Pages
+build.rs, assets/    Programm-Icon und Versionsinfo für Windows
+installer/           Windows-Installer (Inno Setup)
 public/index.html    Seite (wird ins Programm eingebettet)
 public/css/style.css Kontrollraum-Design (hell + dunkel)
 public/fonts/        DSEG7 (7-Segment) und Barlow, selbst gehostet (SIL Open Font License)
@@ -97,7 +100,7 @@ public/js/app.js     Laden, Sortieren, Suche, Countdown, Alarm-Panel
 public/js/model.js   Einlesen der API-Daten (Feldnamen, Sonderwerte, Störungen, Server-ID)
 public/js/demo.js    Demo-Daten im exakten API-Format
 test/                JavaScript-Tests, inkl. echter API-Antwort als Testdaten
-.github/workflows/   CI (Tests), Build app (Windows/macOS/Linux), GitHub Pages
+.github/workflows/   CI (Tests), Build app (Windows-Installer, macOS, Linux → GitHub Release), GitHub Pages
 ```
 
 Fan-Projekt, nicht mit der RBWR Simulation Community verbunden.

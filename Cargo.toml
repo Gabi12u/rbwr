@@ -1,6 +1,6 @@
 [package]
 name = "rbwr-demands"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 description = "Live grid demands for every Realistic Boiling Water Reactor Simulator (RBWR) server, as a local web app."
 license = "MIT"
@@ -12,6 +12,9 @@ serde_json = "1"
 tiny_http = "0.12"
 ureq = { version = "2.12", default-features = false, features = ["tls", "native-certs", "gzip"] }
 webbrowser = "1"
+
+[build-dependencies]
+winresource = "0.1"
 
 [profile.release]
 opt-level = "s"
