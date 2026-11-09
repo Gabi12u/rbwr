@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RBWR Demands</title>
+  <meta name="description" content="Live grid demand, next demand and time to the next change for every Realistic Boiling Water Reactor Simulator server on Roblox.">
+  <meta name="color-scheme" content="light dark">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="fonts/DSEG7Classic-Bold.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="css/style.css">
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <header class="console">
+    <div class="wrap console-grid">
+      <div class="ident">
+        <h1 class="nameplate">RBWR Demands</h1>
+        <p class="lede">Grid demand, next demand and time to the next change for every Realistic Boiling Water Reactor Simulator server.</p>
+        <p class="link-status" id="status" data-state="connecting" role="status" aria-live="polite">
+          <span class="lamps" aria-hidden="true"><i class="lamp lamp-r"></i><i class="lamp lamp-y"></i><i class="lamp lamp-g"></i></span>
+          <span id="status-text">Connecting to the server list…</span>
+        </p>
+      </div>
+
+      <section class="annunciator" aria-labelledby="ann-title">
+        <h2 class="tag" id="ann-title">Alarm panel</h2>
+        <div class="ann-box">
+          <ul class="ann-grid" id="ann">
+            <li class="ann-tile" data-key="link" data-tone="cyan">API link</li>
+            <li class="ann-tile" data-key="apifault" data-tone="red">API fault</li>
+            <li class="ann-tile" data-key="soon" data-tone="amber">Demand change &lt; 5 min</li>
+            <li class="ann-tile" data-key="due" data-tone="red">Demand change &lt; 1 min</li>
+            <li class="ann-tile" data-key="pinned" data-tone="red">Pinned server &lt; 1 min</li>
+            <li class="ann-tile" data-key="scram" data-tone="red">Reactor scram</li>
+            <li class="ann-tile" data-key="trip" data-tone="red">Turbine trip</li>
+            <li class="ann-tile" data-key="loop" data-tone="red">Offsite power lost</li>
+            <li class="ann-tile" data-key="disk" data-tone="red">Rupture disk</li>
+            <li class="ann-tile" data-key="fire" data-tone="red">Fire alarm</li>
+            <li class="ann-tile" data-key="maint" data-tone="amber">Unit in maint</li>
+            <li class="ann-tile" data-key="evac" data-tone="red">Evacuation</li>
+          </ul>
+          <button class="pushbtn ack" type="button" id="ack" title="Acknowledge: stop flashing">Ack</button>
+        </div>
+      </section>
+    </div>
+
+    <div class="wrap">
+      <dl class="readouts">
+        <div class="readout">
+          <dt class="tag">Servers</dt>
+          <dd class="led led-xl"><span class="led-ghost" aria-hidden="true">888</span><span class="led-lit" id="server-count">---</span></dd>
+        </div>
+        <div class="readout">
+          <dt class="tag">Players</dt>
+          <dd class="led led-xl"><span class="led-ghost" aria-hidden="true">888</span><span class="led-lit" id="player-count">---</span></dd>
+        </div>
+        <div class="readout">
+          <dt class="tag">Unit 1 total output [MW]</dt>
+          <dd class="led led-xl"><span class="led-ghost" aria-hidden="true">88888</span><span class="led-lit" id="grid-u1">-----</span></dd>
+        </div>
+        <div class="readout">
+          <dt class="tag">Unit 2 total output [MW]</dt>
+          <dd class="led led-xl"><span class="led-ghost" aria-hidden="true">88888</span><span class="led-lit" id="grid-u2">-----</span></dd>
+        </div>
+      </dl>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <form class="controls" id="controls" role="search">
+      <label class="crt">
+        <span class="crt-bar">Server search</span>
+        <input id="q" type="search" name="q" placeholder="Server ID, e.g. 7b4f-4460" autocomplete="off" spellcheck="false" autocapitalize="off">
+      </label>
+
+      <fieldset class="sorter">
+        <legend class="tag">Sort by</legend>
+        <div class="keys">
+          <label class="key"><input type="radio" name="sort" value="soonest" checked><span class="key-body"><i class="key-lamp"></i>Next change</span></label>
+          <label class="key"><input type="radio" name="sort" value="demand"><span class="key-body"><i class="key-lamp"></i>Demand</span></label>
+          <label class="key"><input type="radio" name="sort" value="players"><span class="key-body"><i class="key-lamp"></i>Players</span></label>
+        </div>
+      </fieldset>
+
+      <label class="rotary">
+        <span class="tag">Show</span>
+        <input type="checkbox" id="public-only">
+        <span class="rotary-plate" aria-hidden="true">
+          <span class="rotary-pos rotary-l">All</span>
+          <span class="rotary-pos rotary-r">Public</span>
+          <span class="rotary-knob"><span class="rotary-handle"></span></span>
+        </span>
+        <span class="sr-only">Public servers only</span>
+      </label>
+    </form>
+
+    <aside class="legend" aria-label="How to read the panels">
+      <p><span class="lamps" aria-hidden="true"><i class="lamp lamp-g is-on"></i></span> Server is reporting</p>
+      <p><span class="lamps" aria-hidden="true"><i class="lamp lamp-y is-on"></i></span> Demand changes within 5 minutes</p>
+      <p><span class="lamps" aria-hidden="true"><i class="lamp lamp-r is-on"></i></span> Demand changes within 1 minute</p>
+      <p><span class="legend-needle" aria-hidden="true"></span> Needle shows output, the red mark shows demand</p>
+      <p><span class="legend-tile" aria-hidden="true"></span> Lit tiles show faults on that server</p>
+    </aside>
+
+    <section class="bank" aria-label="Servers">
+      <ul class="modules" id="rows"></ul>
+      <div class="empty" id="empty">
+        <p>Reading the server list…</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="wrap foot">
+    <p>Demand data comes from the public RBWR server API and refreshes every 15 seconds. Player counts and private status come from Roblox. Pin a server to keep it at the top; click a server ID to copy the full job ID.</p>
+    <p>Fan-made and not affiliated with the RBWR Simulation Community. <a href="https://www.roblox.com/games/11765852158/Realistic-Boiling-Water-Reactor-Simulator" target="_blank" rel="noopener">Play RBWR on Roblox</a></p>
+  </footer>
+</body>
+</html>

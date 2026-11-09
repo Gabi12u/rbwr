@@ -1,0 +1,54 @@
+# Publishes the board on GitHub Pages with a data snapshot, refreshed on a
+# schedule. The RBWR API can't be called from a browser (no CORS headers), so
+# the app's --export mode fetches it here and writes api/servers.json.
+#
+# To switch it on (see README): repo public (or a paid plan), Settings -> Pages
+# -> Source "GitHub Actions", and a repository variable PAGES_LIVE = true.
+# Until then every run is skipped and uses no Actions minutes.
+name: GitHub Pages
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: vars.PAGES_LIVE == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reuse the built app
+        id: bin
+        uses: actions/cache@v4
+        with:
+          path: bin/rbwr-demands
+          key: app-${{ runner.os }}-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'src/**', 'public/**') }}
+      - name: Build the app
+        if: steps.bin.outputs.cache-hit != 'true'
+        run: |
+          cargo build --release
+          mkdir -p bin
+          cp target/release/rbwr-demands bin/
+      - name: Export site and data snapshot
+        run: bin/rbwr-demands --export site
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4

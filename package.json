@@ -1,0 +1,10 @@
+{
+  "name": "rbwr-demands-web",
+  "private": true,
+  "description": "Browser part of RBWR Demands. The app itself is the Rust program (cargo run); this file only runs the JavaScript tests.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "license": "MIT"
+}
