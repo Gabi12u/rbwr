@@ -2,6 +2,10 @@
 
 Live-Demand-Board für **Realistic Boiling Water Reactor Simulator (RBWR)** auf Roblox – als Ersatz für die nicht mehr erreichbare Seite `rbwr.waifly.com`.
 
+**🌐 Website:** **https://gabi12u.github.io/rbwr/** – direkt im Browser, auch auf dem Handy (Daten-Schnappschuss, alle paar Minuten aktualisiert)
+
+**💻 App für Windows, macOS und Linux:** **https://github.com/Gabi12u/rbwr/releases/latest** – eigenes Fenster, Live-Daten alle 15 Sekunden
+
 Gestaltet wie der Kontrollraum im Spiel: beige Pulte, schwarze Schilder, Rundinstrumente mit mintgrünem Zifferblatt, rote 7-Segment-Anzeigen, Leuchtmelder-Tableau, Leuchtdrucktasten und Drehschalter.
 
 Jeder Server bekommt ein eigenes Pult mit:
@@ -38,38 +42,45 @@ Die API sendet **keine CORS-Header**, der Browser darf sie also nicht direkt abf
 
 ## Auf dem PC starten
 
-1. Die App für dein System holen:
-   - **Windows:** `rbwr-demands-windows-x64.exe`
-   - **macOS:** `rbwr-demands-macos-apple-silicon` (M1/M2/…) oder `rbwr-demands-macos-intel`
-   - **Linux:** `rbwr-demands-linux-x64`
+**Download:** https://github.com/Gabi12u/rbwr/releases/latest
 
-   Die Dateien baut der Workflow **„Build app"**: auf GitHub unter *Actions → Build app → Run workflow*, danach unten bei *Artifacts* herunterladen. Mit einem Tag wie `v1.0.0` landen sie automatisch in einem GitHub-Release.
-2. **Doppelklick.** Ein Fenster zeigt die Adresse, und der Browser öffnet `http://localhost:3000/`. Zum Beenden das Fenster schließen.
+- **Windows:** `RBWR-Demands-Setup.exe` herunterladen und starten. Der Installer braucht keine Admin-Rechte, legt einen Startmenü-Eintrag und ein Desktop-Symbol „RBWR Demands" an und startet die App am Ende. Deinstallieren über *Einstellungen → Apps*. Ohne Installation geht auch `rbwr-demands-windows-x64.exe` direkt per Doppelklick.
+- **macOS:** `rbwr-demands-macos-apple-silicon` (M1/M2/…) oder `rbwr-demands-macos-intel`; **Linux:** `rbwr-demands-linux-x64`. Vorher `chmod +x` ausführen, macOS beim ersten Mal per Rechtsklick → *Öffnen*.
 
-Windows warnt beim ersten Start evtl. („Der Computer wurde durch Windows geschützt"), weil die Datei nicht signiert ist: *Weitere Informationen → Trotzdem ausführen*. Auf macOS/Linux vorher `chmod +x` ausführen; macOS beim ersten Mal per Rechtsklick → *Öffnen* starten.
+Die App öffnet ein **eigenes Fenster** mit dem Board und Live-Daten – ohne Browser und ohne schwarzes Konsolenfenster. Zum Beenden das Fenster schließen. „Join" und andere Links öffnen sich im normalen Browser, damit Roblox starten kann. Der Startmenü-Eintrag „RBWR Demands (also on phone)" macht das Board zusätzlich im Heimnetz erreichbar; die Handy-Adresse steht dann im Fenstertitel.
+
+Das Fenster nutzt unter Windows Microsofts WebView2 (bei aktuellem Windows 10/11 schon dabei). Fehlt es, öffnet die App das Board automatisch im Browser.
+
+Windows warnt beim ersten Start evtl. („Der Computer wurde durch Windows geschützt"), weil die Dateien nicht signiert sind: *Weitere Informationen → Trotzdem ausführen*. Passiert gar nichts, hat meist der Virenschutz die Datei blockiert: *Windows-Sicherheit → Viren- & Bedrohungsschutz → Schutzverlauf*, dort den Eintrag zu RBWR Demands öffnen und *Zulassen* wählen.
+
+Die Dateien baut der Workflow **„Build app"** automatisch, sobald sich die App in `main` ändert (oder per *Actions → Build app → Run workflow*).
 
 Optionen (z. B. über eine Verknüpfung oder im Terminal):
 
 | Option | Bedeutung |
 | --- | --- |
-| `--lan` | Auch im Heimnetz erreichbar (Handy, Tablet); die Adresse steht im Fenster |
+| `--lan` | Auch im Heimnetz erreichbar (Handy, Tablet); die Adresse steht im Fenstertitel |
 | `--port 8080` | Anderer Port (sonst 3000 oder der nächste freie) |
-| `--no-browser` | Browser nicht automatisch öffnen |
+| `--browser` | Im normalen Browser statt im App-Fenster öffnen |
+| `--no-browser` | Kein Fenster, kein Browser: nur der Server läuft |
 | `--demo` | Mit Demo-Daten öffnen |
 | `--export ORDNER` | Seite + Daten-Schnappschuss in einen Ordner schreiben (für GitHub Pages) |
 
-Umgebungsvariablen: `PORT`/`SERVER_PORT`, `HOST`, `CACHE_SECONDS` (Standard 15), `UPSTREAM_URLS` (kommagetrennt). Ist `SERVER_PORT` gesetzt (z. B. bei Waifly/Pterodactyl), lauscht die App auf `0.0.0.0` und öffnet keinen Browser – so läuft sie auch auf einem Server.
+Umgebungsvariablen: `PORT`/`SERVER_PORT`, `HOST`, `CACHE_SECONDS` (Standard 15), `UPSTREAM_URLS` (kommagetrennt). Ist `SERVER_PORT` gesetzt (z. B. bei Waifly/Pterodactyl), lauscht die App auf `0.0.0.0` und öffnet kein Fenster – für Server gibt es außerdem `rbwr-demands-server-linux-x64`, die Variante ganz ohne Fenster-Bibliotheken.
 
 ### Selbst bauen
 
 [Rust installieren](https://rustup.rs), dann im Projektordner:
 
 ```bash
-cargo run --release              # startet die App
-cargo build --release            # Programm liegt dann in target/release/
-cargo test                       # Rust-Tests
-npm test                         # Tests für das Einlesen der API-Daten (Node.js 18+)
+cargo run --release                          # startet die App (mit Fenster)
+cargo build --release                        # Programm liegt dann in target/release/
+cargo build --release --no-default-features  # nur Server, ohne Fenster
+cargo test                                   # Rust-Tests
+npm test                                     # Tests für das Einlesen der API-Daten (Node.js 18+)
 ```
+
+Unter Linux braucht das Fenster WebKitGTK: `sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev`.
 
 Die Seite aus `public/` wird beim Bauen ins Programm eingebettet – nach Änderungen an HTML/CSS/JS neu bauen.
 
@@ -89,7 +100,9 @@ Solange `PAGES_LIVE` nicht gesetzt ist, wird jeder Lauf übersprungen und kostet
 ## Aufbau
 
 ```
-src/main.rs          App: Webserver, API-Proxy mit Cache, Browser-Start, Export für GitHub Pages
+src/main.rs          App: Fenster (tao + wry), Webserver, API-Proxy mit Cache, Export für GitHub Pages
+build.rs, assets/    Programm-Icon und Versionsinfo für Windows
+installer/           Windows-Installer (Inno Setup)
 public/index.html    Seite (wird ins Programm eingebettet)
 public/css/style.css Kontrollraum-Design (hell + dunkel)
 public/fonts/        DSEG7 (7-Segment) und Barlow, selbst gehostet (SIL Open Font License)
@@ -97,7 +110,7 @@ public/js/app.js     Laden, Sortieren, Suche, Countdown, Alarm-Panel
 public/js/model.js   Einlesen der API-Daten (Feldnamen, Sonderwerte, Störungen, Server-ID)
 public/js/demo.js    Demo-Daten im exakten API-Format
 test/                JavaScript-Tests, inkl. echter API-Antwort als Testdaten
-.github/workflows/   CI (Tests), Build app (Windows/macOS/Linux), GitHub Pages
+.github/workflows/   CI (Tests), Build app (Windows-Installer, macOS, Linux → GitHub Release), GitHub Pages
 ```
 
 Fan-Projekt, nicht mit der RBWR Simulation Community verbunden.
