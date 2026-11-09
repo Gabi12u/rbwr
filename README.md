@@ -13,6 +13,7 @@ Jeder Server bekommt ein eigenes Pult mit:
 - **Störmelde-Tableau**: Reactor Scram, Turbine Trip, Offsite Power Lost, Rupture Disk, Fire Alarm, Turbine Damage (mit % und Unit), dazu der letzte Scram- und Trip-Grund und ob der Notstromdiesel läuft
 - Sonderzustände `Maint`, `LOOP`, `RST`, `Evac` als Leuchtmelder statt Zahl
 - Spieler, privat/öffentlich, grüner **Join**-Knopf bzw. rotes „Private"-Schild
+- Knöpfe **„Unit 1 panel" / „Unit 2 panel"**: öffnen das Pult der Unit mit allem, was das Spiel meldet – APRM/RTP, Stabstellung, Xenon, Jod, Reaktordruck, -temperatur und -füllstand, Recirc- und Speisewasserpumpen, Hotwell/Deaerator, Turbinendrehzahl und -zustand, Generator, Bus A/B, Anfahrtrafo, Offsite Power, Notstromdiesel, Ereignis-Logger und Standortdaten. Unit 1 im hellgrauen Look des Unit-1-Kontrollraums, Unit 2 beige. Jedes Pult hat einen eigenen Link (`#unit/<job id>/u1`), die Zurück-Taste schließt es.
 
 Oben: **Alarm-Panel** über alle Server (API-Verbindung, Demand-Wechsel < 5 / < 1 min, angepinnter Server < 1 min, Scram, Turbine Trip, Offsite Power, Rupture Disk, Feuer, Maint, Evac). Neue Meldungen blinken, bis man **ACK** drückt. Daneben LED-Anzeigen für Server, Spieler und die Gesamtleistung beider Units.
 
@@ -30,6 +31,7 @@ Was die echten Daten zeigen (geprüft am 9. 11. 2026):
 - Units, die nicht laufen, melden einen leicht negativen Output (Eigenverbrauch) → „Not generating".
 - Server mit Besitzer sind privat („Invite only"); Server ohne Besitzer, die nicht in Roblox' öffentlicher Liste stehen, heißen „Not public".
 - Negative Demand-Werte sind Sonderzustände: `-1` Maint, `-2` LOOP, `-3` RST, `-4` Evac (Kodierung aus anderen Community-Tools; `-1` taucht in echten Daten auf).
+- **Spielersuche** („in welchem Server ist Spieler X?") geht mit öffentlichen Daten nicht: Roblox liefert in der Serverliste keine Spieler mehr (die `playerTokens` sind leer), die RBWR-API hat keine Spielernamen (die Spielerliste der offiziellen Seite ist nur für Admins), und Roblox' Presence-API verrät den Server nur eingeloggten Freunden. Suche stattdessen nach der Server-ID aus dem Spiel.
 - **Störungen:** Die API liefert pro Unit `Reactor Scram State`, `TurbineTrip`, `Offsite Power`, `Disk Ruptured` (nur U2), `TurbineHealth` (nur U2), `DieselRPM` sowie `SCRAMreason`/`TRIPreason` (bleiben nach dem Reset stehen → „Last scram") und pro Server `FSS Smoke Detected`. Zufällige Geräte-Malfunctions (z. B. Feedwater- oder Druck-Malfs) stehen **nicht** in der API.
 
 Die API sendet **keine CORS-Header**, der Browser darf sie also nicht direkt abfragen. Deshalb gibt es die **RBWR-Demands-App** (Rust): Sie holt die Daten (höchstens alle 15 Sekunden, egal wie viele Tabs offen sind) und liefert sie zusammen mit der Seite aus. Für GitHub Pages schreibt sie stattdessen einen Schnappschuss.

@@ -261,10 +261,12 @@ function edgewise() {
 
 // ---- server modules ----------------------------------------------------------
 
-function unitBlock(label) {
+function unitBlock(label, jobId, unit) {
   const g = gauge(label);
   const out = h('span', { class: 'unit-out' });
-  const el = h('figure', { class: 'unit' }, g.svg, h('figcaption', { class: 'unit-read' }, out));
+  const open = h('button', { class: 'pushbtn unit-open', type: 'button', 'data-open': `${jobId}|${unit}` },
+    `Unit ${unit.slice(1)} panel`, h('span', { 'aria-hidden': 'true' }, ' ▸'));
+  const el = h('figure', { class: 'unit' }, g.svg, h('figcaption', { class: 'unit-read' }, out, open));
   return { el, g, out };
 }
 
@@ -280,18 +282,26 @@ function demandReadout(value, { amber = false, title = '' } = {}) {
 
 // "Demand now ▶ Next demand": one row when both units share the demand
 // (almost always), one row per unit when they differ.
-function updateDemand(rows, v, projected) {
+function updateDemand(rows, v, t) {
+  if (t.phase === 'expired') {
+    rows.replaceChildren(h('p', { class: 'dem-note' },
+      'No current demand: the last report from this server is older than a full demand period (20 min).',
+      state.snapshotAt !== null ? ' The website copy refreshes every few minutes; the app on your PC is live.' : ''));
+    return;
+  }
+  const projected = t.phase === 'projected';
   const d1 = v.units.u1?.demand ?? null;
   const d2 = v.units.u2?.demand ?? null;
   const n1 = v.units.u1?.next ?? null;
   const n2 = v.units.u2?.next ?? null;
   const same = d1 === d2 && n1 === n2;
-  const nextTitle = projected ? 'Known after the server’s next report' : '';
   const row = (unit, d, n) => [
     unit ? h('span', { class: 'dem-unit' }, unit) : null,
     h('span', { class: 'dem-now' }, demandReadout(d)),
     h('span', { class: 'dem-arrow', 'aria-hidden': 'true' }, '▶'),
-    h('span', { class: 'dem-next' }, demandReadout(n, { amber: true, title: nextTitle })),
+    h('span', { class: 'dem-next' }, n === null && projected
+      ? h('span', { class: 'dem-wait' }, 'Shows with the server’s next report')
+      : demandReadout(n, { amber: true })),
   ];
   const cells = [
     h('span', { class: 'dem-label dem-label-now' }, 'Demand now [MW]'),
@@ -310,8 +320,8 @@ function createModule(server) {
   const pin = h('button', { class: 'pushbtn pin', type: 'button', 'data-pin': server.jobId }, h('i', { class: 'key-lamp' }), 'Pin');
   const who = h('span', { class: 'mod-who' });
   const seen = h('span', { class: 'mod-seen' });
-  const u1 = unitBlock('UNIT 1 MWe');
-  const u2 = unitBlock('UNIT 2 MWe');
+  const u1 = unitBlock('UNIT 1 MWe', server.jobId, 'u1');
+  const u2 = unitBlock('UNIT 2 MWe', server.jobId, 'u2');
   const demandRows = h('div', { class: 'dem-grid' });
   const count = led('lg', '88:88');
   const edge = edgewise();
@@ -365,7 +375,7 @@ function updateModule(entry, server) {
   else if (server.players !== null) refs.who.textContent = `${server.players} / ${server.maxPlayers || 12} players`;
   else refs.who.textContent = 'Public server';
 
-  updateDemand(refs.demandRows, v, t.phase === 'projected');
+  updateDemand(refs.demandRows, v, t);
   updateOutput(refs.u1, v.units.u1);
   updateOutput(refs.u2, v.units.u2);
 
@@ -445,6 +455,258 @@ function tickModule(entry, server) {
         : dueNow ? 'Changing soon' : '';
   el.classList.toggle('is-projected', t.phase === 'projected');
 }
+
+// ---- unit panel ----------------------------------------------------------------
+
+// Everything the game reports per unit, laid out like the control room.
+// Readouts only appear for fields the unit actually sends.
+const BOARD_SECTIONS = [
+  { title: 'Reactor control panel', items: [
+    { key: 'APRM', label: 'Average power range monitor [%]', kind: 'seg', digits: 5, dec: 1 },
+    { key: 'RTP', label: 'Rated thermal power [%]', kind: 'seg', digits: 5, dec: 1 },
+    { key: 'Avg. Rod', label: 'Avg. rod position', kind: 'lcd', unit: '%', dec: 2 },
+    { key: 'APRM Setpoint', label: 'APRM setpoint', kind: 'lcd', unit: '%', dec: 0 },
+    { key: 'Xenon', label: 'Xenon', kind: 'lcd', dec: 3 },
+    { key: 'Iodine', label: 'Iodine', kind: 'lcd', dec: 3 },
+    { key: 'Reactor Scram State', label: 'Reactor scram', kind: 'lamp', on: 'r' },
+    { key: ['DoAutoScramU1', 'DoAutoScramU2'], label: 'Auto scram armed', kind: 'lamp', on: 'g' },
+    { key: 'RPS Trip State A', label: 'RPS trip A', kind: 'lamp', on: 'r' },
+    { key: 'RPS Trip State B', label: 'RPS trip B', kind: 'lamp', on: 'r' },
+  ] },
+  { title: 'Reactor vessel', items: [
+    { key: 'Pressure', label: 'Reactor pressure [kPa]', kind: 'seg', digits: 4, dec: 0 },
+    { key: 'Reactor Temp', label: 'Reactor temperature [°C]', kind: 'seg', digits: 4, dec: 1 },
+    { key: 'ReactorLevel', label: 'Reactor level', kind: 'lcd', unit: 'm', dec: 2 },
+    { key: 'Recirc1', label: 'Recirc pump 1', kind: 'bar' },
+    { key: 'Recirc2', label: 'Recirc pump 2', kind: 'bar' },
+    { key: 'AutoPressure', label: 'Auto pressure control', kind: 'lamp', on: 'g' },
+  ] },
+  { title: 'Feedwater & condensate', items: [
+    { key: 'FWP1', label: 'Feedwater pump 1', kind: 'bar' },
+    { key: 'FWP2', label: 'Feedwater pump 2', kind: 'bar' },
+    { key: 'Hotwell Level', label: 'Hotwell level', kind: 'lcd', unit: 'm', dec: 2 },
+    { key: 'Deareator Level', label: 'Deaerator level', kind: 'lcd', unit: 'm', dec: 2 },
+    { key: 'FWP1 Temp', label: 'FWP 1 temperature', kind: 'lcd', unit: '°C', dec: 1 },
+    { key: 'FWP2 Temp', label: 'FWP 2 temperature', kind: 'lcd', unit: '°C', dec: 1 },
+  ] },
+  { title: 'Turbine & generator', items: [
+    { key: 'Turbine RPM', label: 'Turbine speed [rpm]', kind: 'seg', digits: 4, dec: 0 },
+    { key: 'TurbineHealth', label: 'Turbine health', kind: 'lcd', unit: '%', dec: 0 },
+    { key: 'GeneratorTemperature', label: 'Generator temperature', kind: 'lcd', unit: '°C', dec: 1 },
+    { key: 'CasingTemperature', label: 'Casing temperature', kind: 'lcd', unit: '°C', dec: 1 },
+    { key: 'Vibrations', label: 'Vibration', kind: 'lcd', dec: 2 },
+    { key: 'TurbineTrip', label: 'Turbine trip', kind: 'lamp', on: 'r' },
+    { key: 'BypassTurbineAutoTrip', label: 'Bypass turbine auto trip', kind: 'lamp', on: 'y' },
+    { key: 'Disk Ruptured', label: 'Rupture disk', kind: 'lamp', on: 'r' },
+  ] },
+  { title: 'Electrical distribution panel', items: [
+    { key: ['Output (MW)', 'PradDoSieci'], label: 'Sent to grid [MW]', kind: 'seg', color: 'green', digits: 5, dec: 1 },
+    { key: 'DieselRPM', label: 'Diesel generator [rpm]', kind: 'seg', color: 'green', digits: 4, dec: 0 },
+    { key: 'Offsite Power', label: 'Offsite power', kind: 'lamp', on: 'g' },
+    { key: 'Startup XFMR', label: 'Startup transformer', kind: 'lamp', on: 'g' },
+    { key: 'BusA', label: 'Bus A', kind: 'lamp', on: 'g' },
+    { key: 'BusB', label: 'Bus B', kind: 'lamp', on: 'g' },
+    { key: 'DCBus', label: 'DC bus', kind: 'lamp', on: 'g' },
+  ] },
+];
+
+function fmtNum(v, dec = 0) {
+  return typeof v === 'number' && Number.isFinite(v) ? v.toFixed(dec) : '----';
+}
+
+function boardItem(item) {
+  const keys = [].concat(item.key);
+  const read = (raw) => {
+    for (const k of keys) if (raw && raw[k] !== undefined && raw[k] !== null) return raw[k];
+    return undefined;
+  };
+  if (item.kind === 'seg') {
+    const l = led('lg', '8'.repeat(item.digits), item.color === 'green' ? 'led-green' : '');
+    return {
+      el: h('div', { class: 'inst inst-seg' }, l.el, h('span', { class: 'inst-plate' }, item.label)),
+      has: (raw) => typeof read(raw) === 'number',
+      update: (raw) => { l.lit.textContent = fmtNum(read(raw), item.dec); },
+    };
+  }
+  if (item.kind === 'lcd') {
+    const value = h('span', { class: 'lcd-value' });
+    return {
+      el: h('div', { class: 'inst lcd' }, value, h('span', { class: 'lcd-label' }, item.label)),
+      has: (raw) => typeof read(raw) === 'number',
+      update: (raw) => { value.textContent = `${fmtNum(read(raw), item.dec)}${item.unit ? ` ${item.unit}` : ''}`; },
+    };
+  }
+  if (item.kind === 'bar') {
+    const fill = h('i');
+    const value = h('span', { class: 'hbar-value' });
+    return {
+      el: h('div', { class: 'inst hbar-meter' }, h('span', { class: 'inst-name' }, item.label), h('span', { class: 'hbar' }, fill), value),
+      has: (raw) => typeof read(raw) === 'number',
+      update: (raw) => {
+        const v = read(raw);
+        fill.style.width = `${Math.min(100, Math.max(0, v))}%`;
+        value.textContent = `${fmtNum(v, 0)} %`;
+      },
+    };
+  }
+  const lamp = h('i', { class: `lamp lamp-${item.on}` });
+  return {
+    el: h('div', { class: 'inst lamp-row' }, lamp, h('span', { class: 'inst-name' }, item.label)),
+    has: (raw) => typeof read(raw) === 'boolean',
+    update: (raw) => { lamp.classList.toggle('is-on', read(raw) === true); },
+  };
+}
+
+const boardEl = document.getElementById('unit-board');
+const board = { jobId: null, unit: 'u1', items: [], refs: null, pushed: false };
+
+function buildBoard(server) {
+  const unitNo = board.unit.slice(1);
+  const raw = server.units[board.unit]?.raw || null;
+  boardEl.classList.toggle('theme-u1', board.unit === 'u1');
+  boardEl.classList.toggle('theme-u2', board.unit === 'u2');
+
+  const switchKeys = ['u1', 'u2'].map((u) => h('button', {
+    class: 'pushbtn board-key', type: 'button', 'data-open': `${server.jobId}|${u}`, 'aria-pressed': u === board.unit ? 'true' : 'false',
+  }, h('i', { class: 'key-lamp' }), `Unit ${u.slice(1)}`));
+
+  const g = gauge(`UNIT ${unitNo} MWe`);
+  const demandRows = h('div', { class: 'dem-grid' });
+  const count = led('lg', '88:88');
+  const due = h('span', { class: 'timer-note' });
+  const edge = edgewise();
+  const events = h('ul', { class: 'event-log' });
+  const site = h('div', { class: 'site-row' });
+
+  board.items = [];
+  const sections = raw ? BOARD_SECTIONS.map((sec) => {
+    const items = sec.items.map(boardItem).filter((it) => it.has(raw));
+    if (!items.length) return null;
+    board.items.push(...items);
+    return h('section', { class: 'bsec' }, h('h3', { class: 'bsec-title' }, sec.title), h('div', { class: 'bsec-body' }, items.map((it) => it.el)));
+  }).filter(Boolean) : [h('p', { class: 'board-empty' }, 'This unit hasn’t reported any readings yet.')];
+
+  boardEl.replaceChildren(
+    h('header', { class: 'board-head' },
+      h('h2', { class: 'board-unit', id: 'board-title' }, `Unit 0${unitNo}`),
+      h('button', { class: 'tag tag-id', type: 'button', 'data-copy': server.jobId, title: `Copy job ID ${server.jobId}` }, server.shortId),
+      h('div', { class: 'board-keys' }, switchKeys),
+      h('button', { class: 'pushbtn board-close', type: 'button', 'data-close': '' }, 'Close')),
+    h('div', { class: 'board-body' },
+      h('div', { class: 'board-top' },
+        h('section', { class: 'dem-box', 'aria-label': 'Demand' },
+          demandRows,
+          h('div', { class: 'mod-timer' },
+            h('div', { class: 'timer-read' }, h('span', { class: 'dem-label' }, 'Changes in'), count.el, due),
+            edge.svg)),
+        h('figure', { class: 'board-gauge' }, g.svg),
+        h('section', { class: 'events-box', 'aria-label': 'Recent events' },
+          h('h3', { class: 'events-title' }, 'Recent events logger'), events)),
+      h('div', { class: 'board-grid' }, sections),
+      h('section', { class: 'bsec bsec-site' }, h('h3', { class: 'bsec-title' }, 'Site'), site)));
+
+  board.refs = { g, demandRows, count, due, edge, events, site };
+}
+
+function updateBoard() {
+  if (!boardEl.open || !board.refs) return;
+  const server = state.byId.get(board.jobId);
+  if (!server) {
+    board.refs.events.replaceChildren(h('li', { class: 'is-alert' }, 'This server stopped reporting. It may have shut down.'));
+    return;
+  }
+  const t = timing(server);
+  const v = view(server, t);
+  const unit = server.units[board.unit];
+  const raw = unit?.raw || null;
+  if (raw) board.items.forEach((it) => it.update(raw));
+
+  const single = { ...v, units: { u1: v.units[board.unit], u2: v.units[board.unit] } };
+  updateDemand(board.refs.demandRows, single, t);
+  setGauge(board.refs.g, v.units[board.unit]?.output ?? null, v.units[board.unit]?.demand ?? null);
+
+  const lines = [];
+  const f = unit?.faults;
+  if (f?.scram) lines.push(['is-alert', 'Reactor scram active']);
+  if (f?.turbineTrip) lines.push(['is-alert', 'Turbine tripped']);
+  if (f?.offsiteLost) lines.push(['is-alert', 'Offsite power lost']);
+  if (f?.ruptureDisk) lines.push(['is-alert', 'Rupture disk ruptured']);
+  if (server.fire) lines.push(['is-alert', 'Fire alarm: smoke detected']);
+  if (f?.dieselRunning) lines.push(['is-warn', 'Emergency diesel generator running']);
+  if (f?.turbineHealth !== null && f?.turbineHealth !== undefined && f.turbineHealth < 100) lines.push(['is-warn', `Turbine damaged: ${Math.round(f.turbineHealth)} % health`]);
+  if (f?.lastScram) lines.push(['', `Last scram: ${f.lastScram}`]);
+  if (f?.lastTrip) lines.push(['', `Last turbine trip: ${f.lastTrip}`]);
+  if (!lines.length) lines.push(['is-quiet', 'No events reported']);
+  board.refs.events.replaceChildren(...lines.map(([cls, text]) => h('li', { class: cls }, text)));
+
+  const m = server.misc || {};
+  const siteItems = [
+    ['Outside temperature', typeof m['Outside Temperature'] === 'number' ? `${fmtNum(m['Outside Temperature'], 0)} °C` : null],
+    ['EDG diesel storage', typeof m['EDG Diesel Storage'] === 'number' ? fmtNum(m['EDG Diesel Storage'], 0) : null],
+    ['Evacuation cooldown', typeof m['Evacuation Cooldown'] === 'number' ? (m['Evacuation Cooldown'] > 0 ? fmtClock(m['Evacuation Cooldown']) : 'None') : null],
+    ['Points per second', typeof m['Total points/second'] === 'number' ? fmtNum(m['Total points/second'], 2) : null],
+  ].filter(([, value]) => value !== null);
+  board.refs.site.replaceChildren(...siteItems.map(([label, value]) =>
+    h('div', { class: 'inst lcd' }, h('span', { class: 'lcd-value' }, value), h('span', { class: 'lcd-label' }, label))));
+  tickBoard();
+}
+
+function tickBoard() {
+  if (!boardEl.open || !board.refs) return;
+  const server = state.byId.get(board.jobId);
+  if (!server) return;
+  const t = timing(server);
+  if (t.phase !== board.phase) {
+    board.phase = t.phase;
+    updateBoard();
+    return;
+  }
+  const left = t.left;
+  board.refs.count.lit.textContent = left === null ? '--:--' : fmtClock(left);
+  board.refs.edge.pointer.style.transform = `translateX(${edgeX(left ?? 0)}px)`;
+  board.refs.due.textContent = t.phase === 'projected' ? 'New demand, report pending' : left !== null && left <= DUE_S ? 'Changing soon' : '';
+  boardEl.classList.toggle('is-due', left !== null && left <= DUE_S);
+}
+
+function openBoard(jobId, unit) {
+  const server = state.byId.get(jobId);
+  if (!server) return;
+  board.jobId = jobId;
+  board.unit = unit;
+  board.phase = timing(server).phase;
+  buildBoard(server);
+  if (!boardEl.open) boardEl.showModal();
+  updateBoard();
+}
+
+// The panel lives in the URL (#unit/<job id>/u1) so the back button closes it
+// and a panel can be shared as a link.
+function boardHash(jobId, unit) { return `#unit/${jobId}/${unit}`; }
+
+function routeFromHash() {
+  const m = location.hash.match(/^#unit\/([0-9a-fA-F-]+)\/(u[12])$/);
+  if (m && state.data) {
+    const server = state.data.servers.find((sv) => sv.jobId === m[1] || sv.shortId === m[1]);
+    if (server) { openBoard(server.jobId, m[2]); return; }
+  }
+  if (!m && boardEl.open) boardEl.close();
+}
+
+window.addEventListener('hashchange', routeFromHash);
+
+boardEl.addEventListener('close', () => {
+  board.refs = null;
+  if (location.hash.startsWith('#unit/')) {
+    if (board.pushed) history.back();
+    else history.replaceState(null, '', location.pathname + location.search);
+  }
+  board.pushed = false;
+});
+
+boardEl.addEventListener('click', (e) => {
+  if (e.target === boardEl) boardEl.close(); // click on the backdrop
+  if (e.target.closest('[data-close]')) boardEl.close();
+});
 
 // ---- data loading ------------------------------------------------------------
 
@@ -672,12 +934,20 @@ function tick() {
   }
   renderStatus();
   renderAnnunciator();
+  tickBoard();
 }
+
+let routed = false;
 
 function render() {
   renderReadouts();
   renderModules();
   tick();
+  updateBoard();
+  if (!routed && state.data) {
+    routed = true;
+    routeFromHash();
+  }
 }
 
 // ---- interaction -------------------------------------------------------------
@@ -734,6 +1004,21 @@ document.addEventListener('click', async (e) => {
     renderModules();
     tick();
     pin.focus();
+    return;
+  }
+
+  const open = e.target.closest('[data-open]');
+  if (open) {
+    const [jobId, unit] = open.dataset.open.split('|');
+    const hash = boardHash(jobId, unit);
+    if (location.hash === hash) openBoard(jobId, unit);
+    else if (boardEl.open) {
+      history.replaceState(null, '', hash);
+      openBoard(jobId, unit);
+    } else {
+      board.pushed = true;
+      location.hash = hash.slice(1); // adds a history entry; hashchange opens the panel
+    }
     return;
   }
 

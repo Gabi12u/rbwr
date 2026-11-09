@@ -44,6 +44,8 @@ test('reads demand, next demand, countdown and output from the API format', () =
   assert.deepEqual(pickBasics(a.units.u1), { demand: 850, next: 900, timeLeft: 245.5, output: 846.2 });
   assert.deepEqual(pickBasics(a.units.u2), { demand: 600, next: 450, timeLeft: 245.5, output: 603 });
   assert.equal(a.pointsPerSecond, 2.4);
+  assert.equal(a.units.u1.raw['Output (MW)'], 846.2, 'raw fields are kept for the unit panel');
+  assert.deepEqual(a.misc, { 'Total points/second': 2.4 });
   assert.equal(a.isPrivate, false);
   assert.deepEqual(grid, { u1: 846.2, u2: 603 }, 'grid = summed outputs, negatives count as 0');
 });

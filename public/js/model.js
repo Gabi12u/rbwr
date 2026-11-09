@@ -72,6 +72,7 @@ function readUnit(raw, n) {
     timeLeft: pick(raw, ['Demand Time Left', 'DemandTimeLeft', 'dtl']),
     output: pick(raw, ['Output (MW)', 'PradDoSieci', 'Output', 'Power', 'megawatts']),
     faults: readFaults(raw),
+    raw, // every field the game reports, for the unit panel
   };
 }
 
@@ -165,6 +166,7 @@ export function normalize(raw, roblox = null) {
       maxPlayers: info ? num(info.maxPlayers) : null,
       pointsPerSecond: pick(state.Misc, ['Total points/second']),
       fire: Boolean(state.Misc && state.Misc['FSS Smoke Detected'] === true),
+      misc: state.Misc && typeof state.Misc === 'object' ? state.Misc : {},
     });
   }
 
