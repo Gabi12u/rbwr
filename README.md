@@ -32,49 +32,70 @@ Was die echten Daten zeigen (geprüft am 9. 11. 2026):
 - Negative Demand-Werte sind Sonderzustände: `-1` Maint, `-2` LOOP, `-3` RST, `-4` Evac (Kodierung aus anderen Community-Tools; `-1` taucht in echten Daten auf).
 - **Störungen:** Die API liefert pro Unit `Reactor Scram State`, `TurbineTrip`, `Offsite Power`, `Disk Ruptured` (nur U2), `TurbineHealth` (nur U2), `DieselRPM` sowie `SCRAMreason`/`TRIPreason` (bleiben nach dem Reset stehen → „Last scram") und pro Server `FSS Smoke Detected`. Zufällige Geräte-Malfunctions (z. B. Feedwater- oder Druck-Malfs) stehen **nicht** in der API.
 
-Die API sendet **keine CORS-Header**, der Browser darf sie also nicht direkt abfragen. Deshalb holt `server.js` die Daten (höchstens alle 15 Sekunden, egal wie viele Leute die Seite offen haben) und gibt sie unter `/api/servers` an die Seite weiter.
+Die API sendet **keine CORS-Header**, der Browser darf sie also nicht direkt abfragen. Deshalb gibt es die **RBWR-Demands-App** (Rust): Sie holt die Daten (höchstens alle 15 Sekunden, egal wie viele Tabs offen sind) und liefert sie zusammen mit der Seite aus. Für GitHub Pages schreibt sie stattdessen einen Schnappschuss.
 
-## Starten
+## Auf dem PC starten
 
-Voraussetzung: **Node.js 18 oder neuer**. Keine weiteren Pakete nötig (`npm install` ist nicht erforderlich).
+1. Die App für dein System holen:
+   - **Windows:** `rbwr-demands-windows-x64.exe`
+   - **macOS:** `rbwr-demands-macos-apple-silicon` (M1/M2/…) oder `rbwr-demands-macos-intel`
+   - **Linux:** `rbwr-demands-linux-x64`
+
+   Die Dateien baut der Workflow **„Build app"**: auf GitHub unter *Actions → Build app → Run workflow*, danach unten bei *Artifacts* herunterladen. Mit einem Tag wie `v1.0.0` landen sie automatisch in einem GitHub-Release.
+2. **Doppelklick.** Ein Fenster zeigt die Adresse, und der Browser öffnet `http://localhost:3000/`. Zum Beenden das Fenster schließen.
+
+Windows warnt beim ersten Start evtl. („Der Computer wurde durch Windows geschützt"), weil die Datei nicht signiert ist: *Weitere Informationen → Trotzdem ausführen*. Auf macOS/Linux vorher `chmod +x` ausführen; macOS beim ersten Mal per Rechtsklick → *Öffnen* starten.
+
+Optionen (z. B. über eine Verknüpfung oder im Terminal):
+
+| Option | Bedeutung |
+| --- | --- |
+| `--lan` | Auch im Heimnetz erreichbar (Handy, Tablet); die Adresse steht im Fenster |
+| `--port 8080` | Anderer Port (sonst 3000 oder der nächste freie) |
+| `--no-browser` | Browser nicht automatisch öffnen |
+| `--demo` | Mit Demo-Daten öffnen |
+| `--export ORDNER` | Seite + Daten-Schnappschuss in einen Ordner schreiben (für GitHub Pages) |
+
+Umgebungsvariablen: `PORT`/`SERVER_PORT`, `HOST`, `CACHE_SECONDS` (Standard 15), `UPSTREAM_URLS` (kommagetrennt). Ist `SERVER_PORT` gesetzt (z. B. bei Waifly/Pterodactyl), lauscht die App auf `0.0.0.0` und öffnet keinen Browser – so läuft sie auch auf einem Server.
+
+### Selbst bauen
+
+[Rust installieren](https://rustup.rs), dann im Projektordner:
 
 ```bash
-npm start          # echte Daten, http://localhost:3000
-npm run demo       # Fake-Daten zum Ausprobieren, ohne Internet
-npm test           # Tests für das Einlesen der API-Daten
+cargo run --release              # startet die App
+cargo build --release            # Programm liegt dann in target/release/
+cargo test                       # Rust-Tests
+npm test                         # Tests für das Einlesen der API-Daten (Node.js 18+)
 ```
 
-`?demo` hinter der Adresse (z. B. `http://localhost:3000/?demo`) zeigt Demo-Daten auch bei laufendem Live-Server.
+Die Seite aus `public/` wird beim Bauen ins Programm eingebettet – nach Änderungen an HTML/CSS/JS neu bauen.
 
-### Einstellungen (Umgebungsvariablen)
+## Website auf GitHub Pages
 
-| Variable | Standard | Bedeutung |
-| --- | --- | --- |
-| `PORT` / `SERVER_PORT` | `3000` | Port des Webservers (`SERVER_PORT` setzt Pterodactyl/Waifly automatisch) |
-| `HOST` | `0.0.0.0` | Adresse, an die gebunden wird |
-| `CACHE_SECONDS` | `15` | Wie lange eine API-Antwort wiederverwendet wird |
-| `UPSTREAM_URLS` | beide realisticbwr.org-URLs | Kommagetrennte Liste von API-URLs |
-| `DEMO` | – | `1` = Demo-Daten statt echter API |
+Der Workflow **„GitHub Pages"** baut die App, lässt sie mit `--export` die Seite samt Daten-Schnappschuss schreiben und veröffentlicht das alle 10 Minuten unter `https://gabi12u.github.io/rbwr/`. Countdowns bleiben trotzdem sekundengenau (sie werden aus Meldezeitpunkt + Restzeit berechnet), und ist eine Demand seit dem Schnappschuss gewechselt, zeigt die Seite schon die neue an. Live (15 s) ist nur die App auf dem PC.
 
-## Hosten
+Einschalten:
 
-**Waifly / Pterodactyl (Node.js-Egg):** Alle Dateien hochladen, als Startdatei `server.js` eintragen (bzw. Startbefehl `node server.js`). Der Port wird über `SERVER_PORT` automatisch übernommen.
+1. **Repo öffentlich machen** (*Settings → General → Danger Zone → Change visibility*). Für private Repos braucht GitHub Pages einen bezahlten Plan, und der 10-Minuten-Takt würde das Freikontingent an Actions-Minuten aufbrauchen; bei öffentlichen Repos ist beides kostenlos.
+2. *Settings → Pages → Build and deployment → Source:* **GitHub Actions**.
+3. *Settings → Secrets and variables → Actions → Variables →* **New repository variable**: Name `PAGES_LIVE`, Wert `true`.
+4. Diese Änderungen in `main` mergen (geplante Workflows laufen nur auf dem Standard-Branch), dann *Actions → GitHub Pages → Run workflow*.
 
-**Eigener Server / VPS:** `node server.js` hinter einem Reverse-Proxy (nginx, Caddy) laufen lassen, z. B. mit `pm2` oder einem systemd-Service.
-
-**Nicht geeignet:** reines Static Hosting wie GitHub Pages – ohne `server.js` kommen wegen der fehlenden CORS-Header keine Daten an.
+Solange `PAGES_LIVE` nicht gesetzt ist, wird jeder Lauf übersprungen und kostet nichts. GitHub startet geplante Läufe manchmal verspätet; dann ist der Schnappschuss etwas älter.
 
 ## Aufbau
 
 ```
-server.js            Webserver + API-Proxy mit Cache (keine Abhängigkeiten)
-public/index.html    Seite
+src/main.rs          App: Webserver, API-Proxy mit Cache, Browser-Start, Export für GitHub Pages
+public/index.html    Seite (wird ins Programm eingebettet)
 public/css/style.css Kontrollraum-Design (hell + dunkel)
 public/fonts/        DSEG7 (7-Segment) und Barlow, selbst gehostet (SIL Open Font License)
-public/js/app.js     Laden, Sortieren, Suche, Countdown
-public/js/model.js   Einlesen der API-Daten (Feldnamen, Sonderwerte, Server-ID)
+public/js/app.js     Laden, Sortieren, Suche, Countdown, Alarm-Panel
+public/js/model.js   Einlesen der API-Daten (Feldnamen, Sonderwerte, Störungen, Server-ID)
 public/js/demo.js    Demo-Daten im exakten API-Format
-test/                Tests (node --test), inkl. echter API-Antwort als Testdaten
+test/                JavaScript-Tests, inkl. echter API-Antwort als Testdaten
+.github/workflows/   CI (Tests), Build app (Windows/macOS/Linux), GitHub Pages
 ```
 
 Fan-Projekt, nicht mit der RBWR Simulation Community verbunden.

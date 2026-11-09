@@ -1,16 +1,10 @@
 {
-  "name": "rbwr-demands",
-  "version": "1.0.0",
-  "description": "Live grid demands for every Realistic Boiling Water Reactor Simulator (RBWR) server on Roblox.",
+  "name": "rbwr-demands-web",
+  "private": true,
+  "description": "Browser part of RBWR Demands. The app itself is the Rust program (cargo run); this file only runs the JavaScript tests.",
   "type": "module",
-  "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "demo": "node server.js --demo",
     "test": "node --test test/*.test.js"
-  },
-  "engines": {
-    "node": ">=18"
   },
   "license": "MIT"
 }

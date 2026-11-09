@@ -1,0 +1,67 @@
+# Builds the app for Windows, macOS and Linux.
+# Run it by hand (Actions -> Build app -> Run workflow) to get downloadable
+# artifacts, or push a tag like v1.0.0 to attach the files to a GitHub release.
+name: Build app
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            file: rbwr-demands.exe
+            name: rbwr-demands-windows-x64.exe
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            file: rbwr-demands
+            name: rbwr-demands-macos-apple-silicon
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            file: rbwr-demands
+            name: rbwr-demands-macos-intel
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            file: rbwr-demands
+            name: rbwr-demands-linux-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Add target
+        run: rustup target add ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Rename
+        shell: bash
+        run: |
+          mkdir dist
+          cp "target/${{ matrix.target }}/release/${{ matrix.file }}" "dist/${{ matrix.name }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/${{ matrix.name }}
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

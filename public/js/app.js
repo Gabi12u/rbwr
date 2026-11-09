@@ -3,6 +3,7 @@ import {
 } from './model.js';
 
 const REFRESH_MS = 15000;
+const SNAPSHOT_REFRESH_MS = 60000; // GitHub Pages snapshots change every few minutes
 const STALE_HEARTBEAT_S = 180;
 const PERIOD_S = 1200; // a demand lasts 20 minutes in RBWR
 const SOON_S = 300;
@@ -37,6 +38,7 @@ const state = {
   byId: new Map(),     // jobId -> server
   receivedAt: 0,       // client time of the last successful load
   clockOffset: 0,      // server time minus client time
+  snapshotAt: null,    // fetch time of a static snapshot (GitHub Pages), else null
   mode: DEMO ? 'demo' : 'proxy',
   stale: false,
   error: null,
@@ -121,6 +123,14 @@ function heartbeatAge(server) {
   return (serverNow() - server.heartbeat) / 1000;
 }
 
+// How long the server had been silent when the data was fetched. For a
+// snapshot that's measured at snapshot time, so older snapshots don't make
+// every server look dead.
+function silence(server) {
+  if (server.heartbeat === null) return null;
+  return ((state.snapshotAt ?? serverNow()) - server.heartbeat) / 1000;
+}
+
 function demandOf(server) {
   return server.units.u1?.demand ?? server.units.u2?.demand ?? null;
 }
@@ -128,17 +138,25 @@ function demandOf(server) {
 // After the countdown runs out, the API keeps the old demand until the server
 // reports again (often 60–90 s later). The new demand is already known (it was
 // "next") and starts a fresh 20-minute period, so the board shows that instead.
+// Past that period the data is too old to say anything.
 function timing(server) {
   const raw = secondsLeft(server);
-  if (raw === null) return { left: null, projected: false };
-  if (raw > 0) return { left: raw, projected: false };
-  return { left: Math.max(0, raw + PERIOD_S), projected: true };
+  if (raw === null) return { left: null, phase: 'none' };
+  if (raw > 0) return { left: raw, phase: 'live' };
+  if (raw + PERIOD_S > 0) return { left: raw + PERIOD_S, phase: 'projected' };
+  return { left: null, phase: 'expired' };
 }
 
-function view(server, projected) {
-  if (!projected) return server;
-  const shift = (u) => (u && u.next !== null ? { ...u, demand: u.next, next: null } : u);
-  return { ...server, units: { u1: shift(server.units.u1), u2: shift(server.units.u2) } };
+function view(server, t) {
+  if (t.phase === 'projected') {
+    const shift = (u) => (u && u.next !== null ? { ...u, demand: u.next, next: null } : u);
+    return { ...server, units: { u1: shift(server.units.u1), u2: shift(server.units.u2) } };
+  }
+  if (t.phase === 'expired') {
+    const blank = (u) => (u ? { ...u, demand: null, next: null } : u);
+    return { ...server, units: { u1: blank(server.units.u1), u2: blank(server.units.u2) } };
+  }
+  return server;
 }
 
 // ---- instruments -------------------------------------------------------------
@@ -333,8 +351,8 @@ function updateUnit(block, unit, projected) {
 function updateModule(entry, server) {
   const { refs } = entry;
   const t = timing(server);
-  entry.projected = t.projected;
-  const v = view(server, t.projected);
+  entry.phase = t.phase;
+  const v = view(server, t);
   const pinned = state.pinned.has(server.jobId);
   entry.el.classList.toggle('is-pinned', pinned);
   refs.pin.setAttribute('aria-pressed', pinned ? 'true' : 'false');
@@ -346,8 +364,8 @@ function updateModule(entry, server) {
   else if (server.players !== null) refs.who.textContent = `${server.players} / ${server.maxPlayers || 12} players`;
   else refs.who.textContent = 'Public server';
 
-  updateUnit(refs.u1, v.units.u1, t.projected);
-  updateUnit(refs.u2, v.units.u2, t.projected);
+  updateUnit(refs.u1, v.units.u1, t.phase === 'projected');
+  updateUnit(refs.u2, v.units.u2, t.phase === 'projected');
 
   const total = totalDemand(v);
   const next = totalNext(v);
@@ -387,7 +405,7 @@ function updateModule(entry, server) {
 // Sets the gauges; called after the module is in the document so the needles swing.
 function updateGauges(entry, server) {
   const { refs } = entry;
-  const v = view(server, entry.projected);
+  const v = view(server, timing(server));
   setGauge(refs.u1.g, v.units.u1?.output ?? null, v.units.u1?.demand ?? null);
   setGauge(refs.u2.g, v.units.u2?.output ?? null, v.units.u2?.demand ?? null);
 }
@@ -395,13 +413,14 @@ function updateGauges(entry, server) {
 function tickModule(entry, server) {
   const { el, refs } = entry;
   const age = heartbeatAge(server);
-  const stale = age !== null && age > STALE_HEARTBEAT_S;
-  refs.seen.textContent = age === null ? '' : stale ? `No signal for ${fmtAgo(age)}` : `Reported ${fmtAgo(age)} ago`;
+  const quiet = silence(server);
+  const stale = quiet !== null && quiet > STALE_HEARTBEAT_S;
+  refs.seen.textContent = age === null ? '' : stale ? `No signal for ${fmtAgo(quiet)}` : `Reported ${fmtAgo(age)} ago`;
   refs.seen.classList.toggle('is-warn', stale);
   el.classList.toggle('is-stale', stale);
 
   const t = timing(server);
-  if (t.projected !== entry.projected) {
+  if (t.phase !== entry.phase) {
     updateModule(entry, server);
     updateGauges(entry, server);
   }
@@ -418,23 +437,35 @@ function tickModule(entry, server) {
   refs.count.lit.textContent = left === null ? '--:--' : fmtClock(left);
   refs.edge.pointer.style.transform = `translateX(${edgeX(left ?? 0)}px)`;
   refs.edge.svg.classList.toggle('is-off', left === null);
-  refs.due.textContent = left === null ? 'Waiting for first report'
-    : t.projected ? 'New demand, report pending'
-      : dueNow ? 'Changing soon' : '';
-  el.classList.toggle('is-projected', t.projected);
+  refs.due.textContent = t.phase === 'none' ? 'Waiting for first report'
+    : t.phase === 'expired' ? 'No recent data'
+      : t.phase === 'projected' ? 'New demand, report pending'
+        : dueNow ? 'Changing soon' : '';
+  el.classList.toggle('is-projected', t.phase === 'projected');
 }
 
 // ---- data loading ------------------------------------------------------------
 
-// The RBWR API sends no CORS headers, so browsers can't call it directly;
-// server.js fetches it and serves it at /api/servers.
-async function fetchProxy() {
-  const res = await fetch('api/servers', { cache: 'no-store' });
+// The RBWR API sends no CORS headers, so browsers can't call it directly.
+// The RBWR Demands app fetches it and serves it at /api/servers; on GitHub
+// Pages a workflow publishes a snapshot at api/servers.json instead.
+async function fetchJson(url) {
+  const res = await fetch(url, { cache: 'no-store' });
   const type = res.headers.get('content-type') || '';
-  if (!type.includes('application/json')) throw new Error(NO_PROXY);
+  if (!type.includes('application/json')) return null;
   const body = await res.json();
   if (!res.ok || !body.ok) throw new Error(body.error || `HTTP ${res.status}`);
   return body;
+}
+
+async function fetchLive() {
+  if (state.snapshotAt === null) {
+    const body = await fetchJson('api/servers');
+    if (body) return body;
+  }
+  const snapshot = await fetchJson('api/servers.json');
+  if (snapshot) return snapshot;
+  throw new Error(NO_PROXY);
 }
 
 async function fetchDemo() {
@@ -448,12 +479,14 @@ async function load() {
   if (loading) return;
   loading = true;
   try {
-    const body = state.mode === 'demo' ? await fetchDemo() : await fetchProxy();
+    const body = state.mode === 'demo' ? await fetchDemo() : await fetchLive();
     if (body.source === 'demo') state.mode = 'demo';
+    state.snapshotAt = body.snapshot ? body.fetchedAt : null;
     state.data = normalize(body.upstream, body.roblox);
     state.byId = new Map(state.data.servers.map((sv) => [sv.jobId, sv]));
     state.receivedAt = Date.now();
-    state.clockOffset = typeof body.now === 'number' ? body.now - Date.now() : 0;
+    // A snapshot's "now" is its fetch time, so trust this computer's clock instead.
+    state.clockOffset = !body.snapshot && typeof body.now === 'number' ? body.now - Date.now() : 0;
     state.stale = Boolean(body.stale);
     state.error = body.stale ? body.error || 'API not answering' : null;
   } catch (err) {
@@ -470,7 +503,7 @@ function sortServers(list) {
   const nullsLast = (v, dir) => (v === null || v === undefined ? Infinity : dir * v);
   const by = {
     soonest: (sv) => nullsLast(timing(sv).left, 1),
-    demand: (sv) => nullsLast(totalDemand(view(sv, timing(sv).projected)), -1),
+    demand: (sv) => nullsLast(totalDemand(view(sv, timing(sv))), -1),
     players: (sv) => nullsLast(sv.players, -1),
   }[state.sort] || ((sv) => nullsLast(timing(sv).left, 1));
 
@@ -509,7 +542,7 @@ function renderModules() {
     els.rows.replaceChildren();
     modules.clear();
     if (state.error === NO_PROXY) {
-      showEmpty(h('p', {}, 'This page loads demands through its own server. Start it with “npm start” and open the address it prints.'));
+      showEmpty(h('p', {}, 'This page gets its data from the RBWR Demands app. Start the app and open the address it shows.'));
     } else if (state.error) {
       showEmpty(
         h('p', {}, 'The RBWR server API isn’t answering, so there are no demands to show yet. The board retries every 15 seconds.'),
@@ -558,7 +591,7 @@ function renderModules() {
   if (list.length) {
     els.empty.hidden = true;
   } else if (!d.servers.length) {
-    showEmpty(h('p', {}, 'No RBWR servers are reporting right now. The list refreshes every 15 seconds.'));
+    showEmpty(h('p', {}, 'No RBWR servers are reporting right now. The list refreshes on its own.'));
   } else if (state.query) {
     showEmpty(
       h('p', {}, `No server matches “${state.query}”. Server IDs look like 7b4f-4460; a full job ID works too.`),
@@ -582,12 +615,16 @@ function renderStatus() {
   } else if (state.data && state.error) {
     st = 'stale';
     text = `Showing data from ${ago} ago. The RBWR API isn’t answering; retrying.`;
+  } else if (state.data && state.snapshotAt !== null) {
+    const age = (Date.now() - state.snapshotAt) / 1000;
+    st = age < 1800 ? 'live' : 'stale';
+    text = `Snapshot from ${fmtAgo(age)} ago, refreshed about every 10 minutes`;
   } else if (state.data) {
     st = 'live';
     text = `Live, updated ${ago} ago`;
   } else if (state.error === NO_PROXY) {
     st = 'error';
-    text = 'Server not running';
+    text = 'App not running';
   } else if (state.error) {
     st = 'error';
     text = 'Can’t reach the RBWR server API. Retrying every 15 seconds.';
@@ -735,7 +772,11 @@ document.addEventListener('click', async (e) => {
 // ---- start -------------------------------------------------------------------
 
 load();
-setInterval(() => { if (!document.hidden) load(); }, REFRESH_MS);
+setInterval(() => {
+  if (document.hidden) return;
+  if (state.snapshotAt !== null && Date.now() - state.receivedAt < SNAPSHOT_REFRESH_MS) return;
+  load();
+}, REFRESH_MS);
 setInterval(tick, 1000);
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden && Date.now() - state.receivedAt > REFRESH_MS) load();
