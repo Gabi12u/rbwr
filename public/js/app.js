@@ -1,12 +1,13 @@
 import {
-  normalize, special, totalDemand, totalNext, joinUrl, matchesQuery,
+  normalize, special, totalDemand, totalNext, joinUrl, matchesQuery, serverFaults, FAULTS,
 } from './model.js';
 
 const REFRESH_MS = 15000;
 const STALE_HEARTBEAT_S = 180;
-const BAR_SCALE_S = 1200; // a demand lasts 20 minutes in RBWR
+const PERIOD_S = 1200; // a demand lasts 20 minutes in RBWR
 const SOON_S = 300;
 const DUE_S = 60;
+const GAUGE_MAX = 1200;
 const PIN_KEY = 'rbwr-demands:pinned';
 const SORT_KEY = 'rbwr-demands:sort';
 const PUBLIC_KEY = 'rbwr-demands:public-only';
@@ -27,10 +28,13 @@ const els = {
   q: document.getElementById('q'),
   controls: document.getElementById('controls'),
   publicOnly: document.getElementById('public-only'),
+  ann: document.getElementById('ann'),
+  ack: document.getElementById('ack'),
 };
 
 const state = {
   data: null,          // normalized payload
+  byId: new Map(),     // jobId -> server
   receivedAt: 0,       // client time of the last successful load
   clockOffset: 0,      // server time minus client time
   mode: DEMO ? 'demo' : 'proxy',
@@ -41,6 +45,9 @@ const state = {
   query: params.get('server') || params.get('q') || '',
   pinned: new Set([].concat(storeGet(PIN_KEY, [])).filter((v) => typeof v === 'string')),
 };
+
+const modules = new Map(); // jobId -> { el, refs }
+const annunciators = new Map(); // key -> { el, lit, acked }
 
 // ---- helpers ---------------------------------------------------------------
 
@@ -55,36 +62,48 @@ function storeSet(key, value) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* private mode */ }
 }
 
-
 function h(tag, attrs = {}, ...children) {
   const el = document.createElement(tag);
+  setAttrs(el, attrs);
+  append(el, children);
+  return el;
+}
+
+const SVGNS = 'http://www.w3.org/2000/svg';
+function s(tag, attrs = {}, ...children) {
+  const el = document.createElementNS(SVGNS, tag);
+  setAttrs(el, attrs);
+  append(el, children);
+  return el;
+}
+
+function setAttrs(el, attrs) {
   for (const [k, v] of Object.entries(attrs)) {
     if (v === null || v === undefined || v === false) continue;
-    if (k === 'class') el.className = v;
-    else if (k === 'style') el.style.cssText = v;
-    else if (k.startsWith('data-') || k.startsWith('aria-') || k === 'role' || k === 'title' || k === 'href' || k === 'target' || k === 'rel' || k === 'type') el.setAttribute(k, v === true ? '' : v);
-    else el[k] = v;
+    el.setAttribute(k === 'className' ? 'class' : k, v === true ? '' : v);
   }
+}
+
+function append(el, children) {
   for (const c of children.flat()) {
     if (c === null || c === undefined || c === false) continue;
     el.append(c instanceof Node ? c : document.createTextNode(String(c)));
   }
-  return el;
 }
 
-const mwFmt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0, useGrouping: false });
-const fmtMW = (v) => mwFmt.format(Math.round(v));
+const r2 = (n) => Math.round(n * 100) / 100;
+const fmtMW = (v) => String(Math.round(v));
 
 function fmtClock(seconds) {
-  const s = Math.max(0, Math.ceil(seconds));
-  const m = Math.floor(s / 60);
-  return `${m}:${String(s % 60).padStart(2, '0')}`;
+  const sec = Math.max(0, Math.ceil(seconds));
+  const m = Math.floor(sec / 60);
+  return `${m}:${String(sec % 60).padStart(2, '0')}`;
 }
 
 function fmtAgo(seconds) {
-  const s = Math.max(0, Math.round(seconds));
-  if (s < 60) return `${s} s`;
-  const m = Math.floor(s / 60);
+  const sec = Math.max(0, Math.round(seconds));
+  if (sec < 60) return `${sec} s`;
+  const m = Math.floor(sec / 60);
   if (m < 60) return `${m} min`;
   return `${Math.floor(m / 60)} h ${m % 60} min`;
 }
@@ -100,6 +119,309 @@ function secondsLeft(server) {
 function heartbeatAge(server) {
   if (server.heartbeat === null) return null;
   return (serverNow() - server.heartbeat) / 1000;
+}
+
+function demandOf(server) {
+  return server.units.u1?.demand ?? server.units.u2?.demand ?? null;
+}
+
+// After the countdown runs out, the API keeps the old demand until the server
+// reports again (often 60–90 s later). The new demand is already known (it was
+// "next") and starts a fresh 20-minute period, so the board shows that instead.
+function timing(server) {
+  const raw = secondsLeft(server);
+  if (raw === null) return { left: null, projected: false };
+  if (raw > 0) return { left: raw, projected: false };
+  return { left: Math.max(0, raw + PERIOD_S), projected: true };
+}
+
+function view(server, projected) {
+  if (!projected) return server;
+  const shift = (u) => (u && u.next !== null ? { ...u, demand: u.next, next: null } : u);
+  return { ...server, units: { u1: shift(server.units.u1), u2: shift(server.units.u2) } };
+}
+
+// ---- instruments -------------------------------------------------------------
+
+// 7-segment LED: dim "8"s behind the lit digits, like the in-game displays.
+function led(size, ghost, extraClass = '') {
+  const lit = h('span', { class: 'led-lit' });
+  const el = h('span', { class: `led led-${size} ${extraClass}` },
+    h('span', { class: 'led-ghost', 'aria-hidden': 'true' }, ghost), lit);
+  return { el, lit };
+}
+
+// Round gauge, 240° sweep, 0 to 1200 MW.
+const G = { cx: 100, cy: 94, r: 78 };
+const gaugeAngle = (v) => -120 + 240 * Math.min(1, Math.max(0, v / GAUGE_MAX));
+function polar(r, deg) {
+  const a = (deg * Math.PI) / 180;
+  return [r2(G.cx + r * Math.sin(a)), r2(G.cy - r * Math.cos(a))];
+}
+function arc(r, a0, a1) {
+  const [x0, y0] = polar(r, a0);
+  const [x1, y1] = polar(r, a1);
+  return `M${x0} ${y0} A${r} ${r} 0 ${a1 - a0 > 180 ? 1 : 0} 1 ${x1} ${y1}`;
+}
+
+function gauge(label) {
+  const ticks = [];
+  const nums = [];
+  for (let v = 0; v <= GAUGE_MAX; v += 50) {
+    const major = v % 100 === 0;
+    const a = gaugeAngle(v);
+    const [x0, y0] = polar(G.r - 2, a);
+    const [x1, y1] = polar(G.r - (major ? 12 : 7), a);
+    ticks.push(s('line', { x1: x0, y1: y0, x2: x1, y2: y1, class: major ? 'tick tick-major' : 'tick' }));
+    if (v % 200 === 0) {
+      const [tx, ty] = polar(G.r - 25, a);
+      nums.push(s('text', { x: tx, y: ty + 4.5, class: 'dial-num' }, String(v / 100)));
+    }
+  }
+  const [lx, ly] = polar(G.r, -120);
+  const [rx, ry] = polar(G.r, 120);
+
+  const band = s('path', { class: 'dial-band', d: '' });
+  const pointer = s('g', { class: 'dial-pointer' },
+    s('polygon', { points: `${G.cx},${G.cy - G.r + 12} ${G.cx - 6},${G.cy - G.r - 2} ${G.cx + 6},${G.cy - G.r - 2}` }));
+  const needle = s('g', { class: 'dial-needle' },
+    s('polygon', { points: `${G.cx - 2.6},${G.cy + 10} ${G.cx},${G.cy - G.r + 8} ${G.cx + 2.6},${G.cy + 10}` }),
+    s('circle', { cx: G.cx, cy: G.cy, r: 7, class: 'dial-hub' }),
+    s('circle', { cx: G.cx, cy: G.cy, r: 2.2, class: 'dial-hub-cap' }));
+
+  const svg = s('svg', { viewBox: '0 0 200 150', class: 'dial', 'aria-hidden': 'true', focusable: 'false' },
+    s('rect', { x: 1, y: 1, width: 198, height: 148, rx: 16, class: 'dial-bezel' }),
+    s('rect', { x: 7, y: 7, width: 186, height: 136, rx: 11, class: 'dial-well' }),
+    s('path', { d: `M${G.cx} ${G.cy} L${lx} ${ly} A${G.r} ${G.r} 0 1 1 ${rx} ${ry} Z`, class: 'dial-face' }),
+    band, ...ticks, ...nums,
+    s('text', { x: G.cx, y: G.cy + 24, class: 'dial-unit' }, 'MW ×100'),
+    pointer, needle,
+    s('rect', { x: 68, y: 127, width: 64, height: 14, rx: 2, class: 'dial-plate' }),
+    s('text', { x: 100, y: 137.3, class: 'dial-plate-text' }, label));
+  return { svg, band, pointer, needle };
+}
+
+function setGauge(g, output, demand) {
+  const live = demand !== null && demand >= 0;
+  g.svg.classList.toggle('is-off', !live && !(output > 0));
+  g.needle.style.transform = `rotate(${gaugeAngle(output > 0 ? output : 0)}deg)`;
+  if (live && demand > 0) {
+    g.pointer.style.transform = `rotate(${gaugeAngle(demand)}deg)`;
+    g.pointer.style.opacity = '1';
+    g.band.setAttribute('d', arc(G.r - 5, gaugeAngle(Math.max(0, demand - 25)), gaugeAngle(Math.min(GAUGE_MAX, demand + 25))));
+  } else {
+    g.pointer.style.opacity = '0';
+    g.band.setAttribute('d', '');
+  }
+}
+
+// Edgewise meter for the countdown: 0 to 20 minutes, red under 1, yellow under 5.
+const E = { x0: 20, w: 280 };
+const edgeX = (seconds) => r2(E.x0 + E.w * Math.min(1, Math.max(0, seconds / PERIOD_S)));
+
+function edgewise() {
+  const parts = [];
+  for (let m = 0; m <= 20; m++) {
+    const x = edgeX(m * 60);
+    const major = m % 5 === 0;
+    parts.push(s('line', { x1: x, y1: 14, x2: x, y2: major ? 26 : 21, class: major ? 'tick tick-major' : 'tick' }));
+    if (major) parts.push(s('text', { x, y: 37, class: 'edge-num' }, String(m)));
+  }
+  const pointer = s('g', { class: 'edge-pointer' },
+    s('line', { x1: 0, y1: 9, x2: 0, y2: 30 }),
+    s('polygon', { points: '-4,33 4,33 0,27' }));
+  const svg = s('svg', { viewBox: '0 0 320 48', class: 'edge', 'aria-hidden': 'true', focusable: 'false' },
+    s('rect', { x: 1, y: 1, width: 318, height: 46, rx: 7, class: 'dial-bezel' }),
+    s('rect', { x: 6, y: 6, width: 308, height: 36, rx: 3, class: 'edge-face' }),
+    s('rect', { x: edgeX(0), y: 9, width: r2(edgeX(60) - edgeX(0)), height: 4, class: 'zone-red' }),
+    s('rect', { x: edgeX(60), y: 9, width: r2(edgeX(300) - edgeX(60)), height: 4, class: 'zone-amber' }),
+    ...parts,
+    s('text', { x: 309, y: 37, class: 'edge-unit' }, 'min'),
+    pointer);
+  return { svg, pointer };
+}
+
+// ---- server modules ----------------------------------------------------------
+
+function unitBlock(label, n) {
+  const g = gauge(label);
+  const demand = led('md', '8888');
+  const next = led('sm', '8888', 'led-amber');
+  const nextAnno = h('span', { class: 'annun annun-sm', hidden: true });
+  const anno = h('span', { class: 'annun', hidden: true });
+  const out = h('span', { class: 'unit-out' });
+  const el = h('figure', { class: 'unit' },
+    g.svg,
+    h('figcaption', { class: 'unit-read' },
+      h('span', { class: 'tag tag-sm' }, `Unit ${n} demand`),
+      h('span', { class: 'unit-demand' }, demand.el, anno),
+      h('span', { class: 'unit-next' }, h('span', { class: 'unit-next-label' }, 'Next'), next.el, nextAnno),
+      out));
+  return { el, g, demand, next, nextAnno, anno, out };
+}
+
+function createModule(server) {
+  const lampG = h('i', { class: 'lamp lamp-g' });
+  const lampY = h('i', { class: 'lamp lamp-y' });
+  const lampR = h('i', { class: 'lamp lamp-r' });
+  const lamps = h('span', { class: 'lamps' }, lampR, lampY, lampG);
+  const id = h('button', { class: 'tag tag-id', type: 'button', 'data-copy': server.jobId, title: `Copy job ID ${server.jobId}` }, server.shortId);
+  const pin = h('button', { class: 'pushbtn pin', type: 'button', 'data-pin': server.jobId }, h('i', { class: 'key-lamp' }), 'Pin');
+  const who = h('span', { class: 'mod-who' });
+  const seen = h('span', { class: 'mod-seen' });
+  const u1 = unitBlock('UNIT 1 MWe', 1);
+  const u2 = unitBlock('UNIT 2 MWe', 2);
+  const count = led('lg', '88:88');
+  const edge = edgewise();
+  const due = h('span', { class: 'timer-note' });
+  const total = h('p', { class: 'mod-total' });
+  const action = h('div', { class: 'mod-action' });
+  const faultTiles = new Map();
+  const faults = h('ul', { class: 'fault-grid', 'aria-label': 'Faults' }, FAULTS.map((f) => {
+    const tile = h('li', { class: 'ann-tile ann-sm', 'data-tone': f.tone }, h('span', {}, f.label), h('small', { class: 'fault-units' }));
+    faultTiles.set(f.key, tile);
+    return tile;
+  }));
+  const events = h('ul', { class: 'mod-events' });
+
+  const el = h('li', { class: 'module', 'data-id': server.jobId },
+    h('div', { class: 'mod-head' }, id, lamps, pin),
+    h('p', { class: 'mod-meta' }, who, seen),
+    h('div', { class: 'mod-units' }, u1.el, u2.el),
+    h('div', { class: 'mod-timer' },
+      h('div', { class: 'timer-read' }, h('span', { class: 'tag tag-sm' }, 'Next change in'), count.el, due),
+      edge.svg),
+    faults,
+    events,
+    h('div', { class: 'mod-foot' }, total, action));
+
+  return { el, refs: { lampG, lampY, lampR, lamps, id, pin, who, seen, u1, u2, count, edge, due, total, action, faultTiles, events } };
+}
+
+function updateUnit(block, unit, projected) {
+  const demand = unit?.demand ?? null;
+  const sp = special(demand);
+  block.anno.hidden = !sp;
+  block.demand.el.hidden = Boolean(sp);
+  if (sp) {
+    block.anno.textContent = sp.code;
+    block.anno.title = sp.label;
+    block.anno.className = `annun tone-${sp.tone}`;
+  } else {
+    block.demand.lit.textContent = demand === null ? '----' : fmtMW(demand);
+  }
+
+  const next = unit?.next ?? null;
+  const nextSp = special(next);
+  block.nextAnno.hidden = !nextSp;
+  block.next.el.hidden = Boolean(nextSp);
+  if (nextSp) {
+    block.nextAnno.textContent = nextSp.code;
+    block.nextAnno.title = nextSp.label;
+    block.nextAnno.className = `annun annun-sm tone-${nextSp.tone}`;
+  } else {
+    block.next.lit.textContent = next === null ? '----' : fmtMW(next);
+    block.next.el.title = projected ? 'Known after the server’s next report' : '';
+  }
+
+  // Units that aren't running report a small negative output (their own house load).
+  const out = unit?.output ?? null;
+  block.out.textContent = out === null ? 'No data yet' : out >= 0.5 ? `Output ${fmtMW(out)} MW` : 'Not generating';
+  block.out.classList.toggle('is-idle', !(out >= 0.5));
+}
+
+function updateModule(entry, server) {
+  const { refs } = entry;
+  const t = timing(server);
+  entry.projected = t.projected;
+  const v = view(server, t.projected);
+  const pinned = state.pinned.has(server.jobId);
+  entry.el.classList.toggle('is-pinned', pinned);
+  refs.pin.setAttribute('aria-pressed', pinned ? 'true' : 'false');
+  refs.pin.setAttribute('aria-label', `${pinned ? 'Unpin' : 'Pin'} server ${server.shortId}`);
+  refs.pin.title = pinned ? 'Unpin' : 'Pin to top';
+
+  if (server.privateKind === 'owner') refs.who.textContent = 'Private server';
+  else if (server.privateKind === 'unlisted') refs.who.textContent = 'Not in the public list';
+  else if (server.players !== null) refs.who.textContent = `${server.players} / ${server.maxPlayers || 12} players`;
+  else refs.who.textContent = 'Public server';
+
+  updateUnit(refs.u1, v.units.u1, t.projected);
+  updateUnit(refs.u2, v.units.u2, t.projected);
+
+  const total = totalDemand(v);
+  const next = totalNext(v);
+  refs.total.replaceChildren(
+    h('span', { class: 'tag tag-sm' }, 'Total'),
+    ' ',
+    total === null ? '–' : h('b', {}, `${fmtMW(total)} MW`),
+    next !== null && total !== null && next !== total ? ` → ${fmtMW(next)} MW` : '');
+
+  let action;
+  if (server.privateKind === 'owner') action = h('span', { class: 'hang-tag hang-tag-red', title: 'Private server: join through an invite' }, 'Private', h('small', {}, 'Invite only'));
+  else if (server.privateKind === 'unlisted') action = h('span', { class: 'hang-tag', title: 'Not in Roblox’s public server list' }, 'Not public', h('small', {}, 'Can’t join'));
+  else action = h('a', { class: 'pushbtn go', href: joinUrl(server.jobId), target: '_blank', rel: 'noopener' }, 'Join');
+  refs.action.replaceChildren(action);
+
+  const active = serverFaults(server);
+  for (const f of FAULTS) {
+    const tile = refs.faultTiles.get(f.key);
+    const a = active[f.key];
+    tile.classList.toggle('is-lit', Boolean(a));
+    tile.lastChild.textContent = a ? [a.units.join('+'), f.key === 'turbdmg' ? a.details.join(' ') : ''].filter(Boolean).join(' ') : '';
+    tile.title = a ? [f.label, a.units.join(' and '), f.key === 'turbdmg' ? `health ${a.details.join(', ')}` : a.details.join(', ')].filter(Boolean).join(': ') : `${f.label}: normal`;
+  }
+
+  const lines = [];
+  for (const [name, unit] of [['U1', server.units.u1], ['U2', server.units.u2]]) {
+    const fl = unit?.faults;
+    if (!fl) continue;
+    if (fl.lastScram) lines.push(`Last scram ${name}: ${fl.lastScram}`);
+    if (fl.lastTrip) lines.push(`Last turbine trip ${name}: ${fl.lastTrip}`);
+    if (fl.dieselRunning) lines.push(`Emergency diesel running on ${name}`);
+  }
+  refs.events.replaceChildren(...lines.map((line) => h('li', {}, line)));
+  refs.events.hidden = !lines.length;
+}
+
+// Sets the gauges; called after the module is in the document so the needles swing.
+function updateGauges(entry, server) {
+  const { refs } = entry;
+  const v = view(server, entry.projected);
+  setGauge(refs.u1.g, v.units.u1?.output ?? null, v.units.u1?.demand ?? null);
+  setGauge(refs.u2.g, v.units.u2?.output ?? null, v.units.u2?.demand ?? null);
+}
+
+function tickModule(entry, server) {
+  const { el, refs } = entry;
+  const age = heartbeatAge(server);
+  const stale = age !== null && age > STALE_HEARTBEAT_S;
+  refs.seen.textContent = age === null ? '' : stale ? `No signal for ${fmtAgo(age)}` : `Reported ${fmtAgo(age)} ago`;
+  refs.seen.classList.toggle('is-warn', stale);
+  el.classList.toggle('is-stale', stale);
+
+  const t = timing(server);
+  if (t.projected !== entry.projected) {
+    updateModule(entry, server);
+    updateGauges(entry, server);
+  }
+  const left = t.left;
+  const soon = left !== null && left <= SOON_S;
+  const dueNow = left !== null && left <= DUE_S;
+  el.classList.toggle('is-soon', soon);
+  el.classList.toggle('is-due', dueNow);
+  refs.lampG.classList.toggle('is-on', !stale && server.heartbeat !== null);
+  refs.lampY.classList.toggle('is-on', soon && !dueNow);
+  refs.lampR.classList.toggle('is-on', dueNow);
+  refs.lamps.title = dueNow ? 'Demand changes within 1 minute' : soon ? 'Demand changes within 5 minutes' : stale ? 'No recent report' : 'Reporting';
+
+  refs.count.lit.textContent = left === null ? '--:--' : fmtClock(left);
+  refs.edge.pointer.style.transform = `translateX(${edgeX(left ?? 0)}px)`;
+  refs.edge.svg.classList.toggle('is-off', left === null);
+  refs.due.textContent = left === null ? 'Waiting for first report'
+    : t.projected ? 'New demand, report pending'
+      : dueNow ? 'Changing soon' : '';
+  el.classList.toggle('is-projected', t.projected);
 }
 
 // ---- data loading ------------------------------------------------------------
@@ -129,6 +451,7 @@ async function load() {
     const body = state.mode === 'demo' ? await fetchDemo() : await fetchProxy();
     if (body.source === 'demo') state.mode = 'demo';
     state.data = normalize(body.upstream, body.roblox);
+    state.byId = new Map(state.data.servers.map((sv) => [sv.jobId, sv]));
     state.receivedAt = Date.now();
     state.clockOffset = typeof body.now === 'number' ? body.now - Date.now() : 0;
     state.stale = Boolean(body.stale);
@@ -143,107 +466,13 @@ async function load() {
 
 // ---- rendering ---------------------------------------------------------------
 
-function demandView(value, { big }) {
-  if (value === null || value === undefined) return h('span', { class: 'window is-empty' }, '----');
-  const sp = special(value);
-  if (sp) return h('span', { class: `annun tone-${sp.tone}`, title: sp.label }, sp.code);
-  if (!big) return h('b', {}, fmtMW(value));
-  return h('span', { class: 'window' }, h('span', { class: 'digits' }, fmtMW(value)), h('span', { class: 'unit' }, 'MW'));
-}
-
-function unitCell(unit, cls, label) {
-  const td = h('td', { class: `c-unit ${cls}`, 'data-label': label });
-  if (!unit) {
-    td.append(h('span', { class: 'meta' }, 'No data yet'));
-    return td;
-  }
-  td.append(h('div', { class: 'readout' }, demandView(unit.demand, { big: true })));
-  if (unit.next !== null) {
-    const same = unit.next === unit.demand;
-    td.append(h('div', { class: `next ${same ? 'is-same' : 'is-change'}`, title: 'Next demand' },
-      h('span', { class: 'arrow', 'aria-hidden': 'true' }, '→'),
-      h('span', { class: 'sr-only' }, 'Next demand '),
-      demandView(unit.next, { big: false }),
-      special(unit.next) ? null : ' MW'));
-  }
-  // Units that aren't running report a small negative output (their own house load).
-  if (unit.output !== null && unit.output >= 0.5) {
-    td.append(h('div', { class: 'out' }, `Output ${fmtMW(unit.output)} MW`));
-  } else if (unit.output !== null) {
-    td.append(h('div', { class: 'out' }, 'Not generating'));
-  }
-  return td;
-}
-
-function totalCell(server) {
-  const td = h('td', { class: 'c-total', 'data-label': 'Total' });
-  const total = totalDemand(server);
-  td.append(total === null
-    ? h('span', { class: 'meta' }, '—')
-    : h('span', { class: 'total' }, fmtMW(total), h('small', {}, ' MW')));
-  const next = totalNext(server);
-  if (next !== null && total !== null && next !== total) {
-    td.append(h('div', { class: 'next is-change' }, h('span', { class: 'arrow', 'aria-hidden': 'true' }, '→'), h('span', { class: 'sr-only' }, 'Next total '), h('b', {}, fmtMW(next)), ' MW'));
-  }
-  return td;
-}
-
-function timeCell(server) {
-  const td = h('td', { class: 'c-time', 'data-label': 'Next change in' });
-  if (server.timeLeft === null) {
-    td.append(h('span', { class: 'meta' }, 'Unknown'));
-    return td;
-  }
-  td.append(
-    h('span', { class: 'count', 'data-count': '' }, ''),
-    h('span', { class: 'bar', 'aria-hidden': 'true' }, h('i', {})),
-    h('span', { class: 'due-note', 'data-due': '' }, ''),
-  );
-  return td;
-}
-
-function serverCell(server) {
-  const td = h('td', { class: 'c-server' });
-  td.append(h('button', {
-    class: 'sid', type: 'button', title: `Copy job ID ${server.jobId}`, 'data-copy': server.jobId,
-  }, server.shortId));
-  if (server.privateKind === 'owner') td.append(h('span', { class: 'meta' }, 'Private server'));
-  else if (server.privateKind === 'unlisted') td.append(h('span', { class: 'meta', title: 'Not in Roblox’s public server list' }, 'Not public'));
-  else if (server.players !== null) {
-    td.append(h('span', { class: 'meta' }, `${server.players}${server.maxPlayers ? ` / ${server.maxPlayers}` : ''} players`));
-  }
-  td.append(h('span', { class: 'meta', 'data-seen': '' }, ''));
-  return td;
-}
-
-function rowFor(server) {
-  const pinned = state.pinned.has(server.jobId);
-  const tr = h('tr', { 'data-id': server.jobId, class: pinned ? 'is-pinned' : '' });
-  tr.append(
-    h('td', { class: 'c-pin' }, h('button', {
-      class: 'pin', type: 'button', 'aria-pressed': pinned ? 'true' : 'false',
-      'aria-label': `${pinned ? 'Unpin' : 'Pin'} server ${server.shortId}`,
-      title: pinned ? 'Unpin' : 'Pin to top', 'data-pin': server.jobId,
-    }, pinned ? '★' : '☆')),
-    serverCell(server),
-    unitCell(server.units.u1, 'c-u1', 'Unit 1'),
-    unitCell(server.units.u2, 'c-u2', 'Unit 2'),
-    totalCell(server),
-    timeCell(server),
-    h('td', { class: 'c-join' }, server.isPrivate
-      ? h('span', { class: 'no-join' }, server.privateKind === 'owner' ? 'Invite only' : 'Can’t join')
-      : h('a', { class: 'join', href: joinUrl(server.jobId), target: '_blank', rel: 'noopener' }, 'Join')),
-  );
-  return tr;
-}
-
 function sortServers(list) {
   const nullsLast = (v, dir) => (v === null || v === undefined ? Infinity : dir * v);
   const by = {
-    soonest: (s) => nullsLast(secondsLeft(s), 1),
-    demand: (s) => nullsLast(totalDemand(s), -1),
-    players: (s) => nullsLast(s.players, -1),
-  }[state.sort] || ((s) => nullsLast(secondsLeft(s), 1));
+    soonest: (sv) => nullsLast(timing(sv).left, 1),
+    demand: (sv) => nullsLast(totalDemand(view(sv, timing(sv).projected)), -1),
+    players: (sv) => nullsLast(sv.players, -1),
+  }[state.sort] || ((sv) => nullsLast(timing(sv).left, 1));
 
   return [...list].sort((a, b) => {
     const pa = state.pinned.has(a.jobId) ? 0 : 1;
@@ -255,26 +484,18 @@ function sortServers(list) {
   });
 }
 
-function setMeter(el, value) {
-  el.textContent = value === null ? '----' : fmtMW(value);
-  el.closest('.window').classList.toggle('is-empty', value === null);
+function setLed(el, value) {
+  el.textContent = value === null ? '-'.repeat(el.previousElementSibling.textContent.length) : String(Math.round(value));
 }
 
-function renderMeters() {
+function renderReadouts() {
   const d = state.data;
   if (!d) return;
-  setMeter(els.gridU1, d.grid.u1);
-  setMeter(els.gridU2, d.grid.u2);
-  els.serverCount.textContent = String(d.servers.length);
-  els.serverCount.closest('.window').classList.remove('is-empty');
-  const known = d.servers.filter((s) => s.players !== null);
-  if (known.length) {
-    els.playerCount.textContent = String(known.reduce((sum, s) => sum + s.players, 0));
-    els.playerCount.closest('.window').classList.remove('is-empty');
-  } else {
-    els.playerCount.textContent = '--';
-    els.playerCount.closest('.window').classList.add('is-empty');
-  }
+  setLed(els.gridU1, d.grid.u1);
+  setLed(els.gridU2, d.grid.u2);
+  setLed(els.serverCount, d.servers.length);
+  const known = d.servers.filter((sv) => sv.players !== null);
+  setLed(els.playerCount, known.length ? known.reduce((sum, sv) => sum + sv.players, 0) : null);
 }
 
 function showEmpty(...nodes) {
@@ -282,27 +503,57 @@ function showEmpty(...nodes) {
   els.empty.hidden = false;
 }
 
-function renderRows() {
+function renderModules() {
   const d = state.data;
   if (!d) {
     els.rows.replaceChildren();
+    modules.clear();
     if (state.error === NO_PROXY) {
       showEmpty(h('p', {}, 'This page loads demands through its own server. Start it with “npm start” and open the address it prints.'));
     } else if (state.error) {
       showEmpty(
         h('p', {}, 'The RBWR server API isn’t answering, so there are no demands to show yet. The board retries every 15 seconds.'),
-        h('p', {}, h('button', { type: 'button', 'data-action': 'retry' }, 'Retry now')),
+        h('p', {}, h('button', { class: 'pushbtn', type: 'button', 'data-action': 'retry' }, 'Retry now')),
       );
     }
     return;
   }
 
   let list = d.servers;
-  if (state.publicOnly) list = list.filter((s) => !s.isPrivate);
-  list = list.filter((s) => matchesQuery(s, state.query));
+  if (state.publicOnly) list = list.filter((sv) => !sv.isPrivate);
+  list = list.filter((sv) => matchesQuery(sv, state.query));
   list = sortServers(list);
 
-  els.rows.replaceChildren(...list.map(rowFor));
+  // Reuse existing modules so needles move instead of being redrawn.
+  const fresh = [];
+  const ordered = list.map((sv) => {
+    let entry = modules.get(sv.jobId);
+    if (!entry) {
+      entry = createModule(sv);
+      modules.set(sv.jobId, entry);
+      fresh.push(entry);
+    }
+    updateModule(entry, sv);
+    return entry;
+  });
+  for (const [id, entry] of modules) {
+    if (!state.byId.has(id)) { entry.el.remove(); modules.delete(id); }
+  }
+
+  let cursor = els.rows.firstChild;
+  for (const entry of ordered) {
+    if (entry.el === cursor) cursor = cursor.nextSibling;
+    else els.rows.insertBefore(entry.el, cursor);
+  }
+  while (cursor) {
+    const next = cursor.nextSibling;
+    cursor.remove();
+    cursor = next;
+  }
+
+  const setAll = () => list.forEach((sv) => updateGauges(modules.get(sv.jobId), sv));
+  if (fresh.length) requestAnimationFrame(() => requestAnimationFrame(setAll));
+  else setAll();
 
   if (list.length) {
     els.empty.hidden = true;
@@ -311,79 +562,90 @@ function renderRows() {
   } else if (state.query) {
     showEmpty(
       h('p', {}, `No server matches “${state.query}”. Server IDs look like 7b4f-4460; a full job ID works too.`),
-      h('p', {}, h('button', { type: 'button', 'data-action': 'clear' }, 'Clear search')),
+      h('p', {}, h('button', { class: 'pushbtn', type: 'button', 'data-action': 'clear' }, 'Clear search')),
     );
   } else {
     showEmpty(
       h('p', {}, 'None of the reporting servers are public right now.'),
-      h('p', {}, h('button', { type: 'button', 'data-action': 'show-private' }, 'Show private servers')),
+      h('p', {}, h('button', { class: 'pushbtn', type: 'button', 'data-action': 'show-private' }, 'Show all servers')),
     );
   }
 }
 
 function renderStatus() {
   const ago = state.receivedAt ? fmtAgo((Date.now() - state.receivedAt) / 1000) : null;
-  let s = 'connecting';
+  let st = 'connecting';
   let text = 'Connecting to the server list…';
   if (state.mode === 'demo' && state.data) {
-    s = 'demo';
+    st = 'demo';
     text = `Demo data, updated ${ago} ago`;
   } else if (state.data && state.error) {
-    s = 'stale';
+    st = 'stale';
     text = `Showing data from ${ago} ago. The RBWR API isn’t answering; retrying.`;
   } else if (state.data) {
-    s = 'live';
+    st = 'live';
     text = `Live, updated ${ago} ago`;
   } else if (state.error === NO_PROXY) {
-    s = 'error';
+    st = 'error';
     text = 'Server not running';
   } else if (state.error) {
-    s = 'error';
+    st = 'error';
     text = 'Can’t reach the RBWR server API. Retrying every 15 seconds.';
   }
-  els.status.dataset.state = s;
+  els.status.dataset.state = st;
   if (els.statusText.textContent !== text) els.statusText.textContent = text;
 }
 
-// Updates countdowns, bars and heartbeat ages without rebuilding rows.
+function renderAnnunciator() {
+  const servers = state.data ? state.data.servers : [];
+  const lefts = servers.map((sv) => [sv, timing(sv).left]);
+  const demands = servers.map(demandOf);
+  const faults = servers.map(serverFaults);
+  const any = (key) => faults.some((f) => f[key]);
+  const lit = {
+    link: Boolean(state.data) && !state.error,
+    apifault: Boolean(state.error),
+    soon: lefts.some(([, l]) => l !== null && l > DUE_S && l <= SOON_S),
+    due: lefts.some(([, l]) => l !== null && l <= DUE_S),
+    pinned: lefts.some(([sv, l]) => state.pinned.has(sv.jobId) && l !== null && l <= DUE_S),
+    scram: any('scram'),
+    trip: any('trip'),
+    loop: any('loop'),
+    disk: any('disk'),
+    fire: any('fire'),
+    maint: demands.includes(-1),
+    evac: demands.includes(-4),
+  };
+  for (const [key, a] of annunciators) {
+    const on = Boolean(lit[key]);
+    if (on && !a.lit) a.acked = key === 'link'; // new alarms flash until acknowledged
+    a.lit = on;
+    a.el.classList.toggle('is-lit', on);
+    a.el.classList.toggle('is-flash', on && !a.acked);
+  }
+  els.ack.classList.toggle('is-armed', [...annunciators.values()].some((a) => a.lit && !a.acked));
+}
+
 function tick() {
-  if (state.data) {
-    const byId = new Map(state.data.servers.map((s) => [s.jobId, s]));
-    for (const tr of els.rows.children) {
-      const server = byId.get(tr.dataset.id);
-      if (!server) continue;
-
-      const age = heartbeatAge(server);
-      const seen = tr.querySelector('[data-seen]');
-      if (seen) {
-        const stale = age !== null && age > STALE_HEARTBEAT_S;
-        seen.textContent = age === null ? '' : stale ? `No signal for ${fmtAgo(age)}` : `Reported ${fmtAgo(age)} ago`;
-        seen.classList.toggle('is-warn', stale);
-        tr.classList.toggle('is-stale', stale);
-      }
-
-      const left = secondsLeft(server);
-      const count = tr.querySelector('[data-count]');
-      if (count && left !== null) {
-        count.textContent = fmtClock(left);
-        tr.querySelector('.bar i').style.setProperty('--p', String(Math.min(1, Math.max(0, left / BAR_SCALE_S))));
-        tr.classList.toggle('is-soon', left <= SOON_S);
-        tr.classList.toggle('is-due', left <= DUE_S);
-        const note = tr.querySelector('[data-due]');
-        note.textContent = left <= 0 ? 'Changing now' : left <= DUE_S ? 'Changing soon' : '';
-      }
-    }
+  for (const [id, entry] of modules) {
+    const sv = state.byId.get(id);
+    if (sv) tickModule(entry, sv);
   }
   renderStatus();
+  renderAnnunciator();
 }
 
 function render() {
-  renderMeters();
-  renderRows();
+  renderReadouts();
+  renderModules();
   tick();
 }
 
 // ---- interaction -------------------------------------------------------------
+
+for (const tile of els.ann.querySelectorAll('[data-key]')) {
+  annunciators.set(tile.dataset.key, { el: tile, lit: false, acked: true });
+}
 
 function syncUrl() {
   const url = new URL(location.href);
@@ -403,7 +665,7 @@ els.controls.addEventListener('submit', (e) => e.preventDefault());
 els.q.addEventListener('input', () => {
   state.query = els.q.value.trim();
   syncUrl();
-  renderRows();
+  renderModules();
   tick();
 });
 
@@ -415,8 +677,13 @@ els.controls.addEventListener('change', (e) => {
     state.publicOnly = els.publicOnly.checked;
     storeSet(PUBLIC_KEY, state.publicOnly);
   }
-  renderRows();
+  renderModules();
   tick();
+});
+
+els.ack.addEventListener('click', () => {
+  for (const a of annunciators.values()) if (a.lit) a.acked = true;
+  renderAnnunciator();
 });
 
 document.addEventListener('click', async (e) => {
@@ -425,23 +692,24 @@ document.addEventListener('click', async (e) => {
     const id = pin.dataset.pin;
     if (state.pinned.has(id)) state.pinned.delete(id); else state.pinned.add(id);
     storeSet(PIN_KEY, [...state.pinned]);
-    renderRows();
+    renderModules();
     tick();
-    const again = els.rows.querySelector(`[data-pin="${CSS.escape(id)}"]`);
-    if (again) again.focus();
+    pin.focus();
     return;
   }
 
   const copy = e.target.closest('[data-copy]');
   if (copy) {
+    if (copy.dataset.busy) return;
     const label = copy.textContent;
+    copy.dataset.busy = '1';
     try {
       await navigator.clipboard.writeText(copy.dataset.copy);
       copy.textContent = 'Copied';
     } catch {
       copy.textContent = 'Copy failed';
     }
-    setTimeout(() => { copy.textContent = label; }, 1200);
+    setTimeout(() => { copy.textContent = label; delete copy.dataset.busy; }, 1200);
     return;
   }
 
@@ -450,14 +718,14 @@ document.addEventListener('click', async (e) => {
     state.query = '';
     els.q.value = '';
     syncUrl();
-    renderRows();
+    renderModules();
     tick();
     els.q.focus();
   } else if (action === 'show-private') {
     state.publicOnly = false;
     els.publicOnly.checked = false;
     storeSet(PUBLIC_KEY, false);
-    renderRows();
+    renderModules();
     tick();
   } else if (action === 'retry') {
     load();

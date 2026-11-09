@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  normalize, shortId, special, totalDemand, totalNext, matchesQuery, joinUrl,
+  normalize, shortId, special, totalDemand, totalNext, matchesQuery, joinUrl, serverFaults,
 } from '../public/js/model.js';
 import { demoPayload, demoRoblox } from '../public/js/demo.js';
 import { readFileSync } from 'node:fs';
@@ -40,8 +40,9 @@ test('reads demand, next demand, countdown and output from the API format', () =
   assert.equal(a.shortId, '7b4f-4460');
   assert.equal(a.heartbeat, Date.parse('2026-11-08T12:00:00.000Z'));
   assert.equal(a.timeLeft, 245.5);
-  assert.deepEqual(a.units.u1, { demand: 850, next: 900, timeLeft: 245.5, output: 846.2 });
-  assert.deepEqual(a.units.u2, { demand: 600, next: 450, timeLeft: 245.5, output: 603 });
+  const pickBasics = ({ demand, next, timeLeft, output }) => ({ demand, next, timeLeft, output });
+  assert.deepEqual(pickBasics(a.units.u1), { demand: 850, next: 900, timeLeft: 245.5, output: 846.2 });
+  assert.deepEqual(pickBasics(a.units.u2), { demand: 600, next: 450, timeLeft: 245.5, output: 603 });
   assert.equal(a.pointsPerSecond, 2.4);
   assert.equal(a.isPrivate, false);
   assert.deepEqual(grid, { u1: 846.2, u2: 603 }, 'grid = summed outputs, negatives count as 0');
@@ -137,4 +138,44 @@ test('demo data has the upstream shape', () => {
   assert.equal(servers.filter((s) => s.privateKind === 'owner').length, 5);
   assert.equal(servers.filter((s) => s.privateKind === 'unlisted').length, 1);
   assert.equal(servers.filter((s) => s.units.u1 === null).length, 1);
+});
+
+test('reads faults: active scram and trip, lost offsite power, rupture disk, fire, turbine damage', () => {
+  const raw = {
+    data: {
+      servers: [{
+        jobId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+        state: {
+          Unit1: { DemandU1: 500, 'Reactor Scram State': true, SCRAMreason: 'APRM Upscale', 'Offsite Power': false, DieselRPM: 1800 },
+          Unit2: { DemandU2: 500, TurbineTrip: true, TRIPreason: 'Manual trip', 'Disk Ruptured': true, TurbineHealth: 77, 'Offsite Power': true },
+          Misc: { 'FSS Smoke Detected': true },
+        },
+      }, {
+        jobId: 'ffffffff-bbbb-cccc-dddd-eeeeeeeeeeee',
+        state: {
+          Unit1: { DemandU1: 500, 'Reactor Scram State': false, SCRAMreason: 'Manual Trip Relay', TurbineTrip: false, TRIPreason: 'No Reason Given', 'Offsite Power': true },
+          Unit2: { DemandU2: 500, TurbineHealth: 100 },
+          Misc: { 'FSS Smoke Detected': false },
+        },
+      }],
+    },
+  };
+  const [bad, ok] = normalize(raw).servers;
+  const f = serverFaults(bad);
+  assert.deepEqual(Object.keys(f).sort(), ['disk', 'fire', 'loop', 'scram', 'trip', 'turbdmg']);
+  assert.deepEqual(f.scram, { units: ['U1'], details: ['APRM Upscale'] });
+  assert.deepEqual(f.trip, { units: ['U2'], details: ['Manual trip'] });
+  assert.deepEqual(f.loop.units, ['U1']);
+  assert.deepEqual(f.turbdmg.details, ['77 %']);
+  assert.equal(bad.units.u1.faults.dieselRunning, true);
+
+  assert.deepEqual(serverFaults(ok), {}, 'an old scram reason alone is not an active fault');
+  assert.equal(ok.units.u1.faults.lastScram, 'Manual Trip Relay');
+  assert.equal(ok.units.u1.faults.lastTrip, null);
+});
+
+test('faults in the real response', () => {
+  const { servers } = normalize(live.upstream, live.roblox);
+  const loop = servers.find((s) => s.jobId.startsWith('e9789848'));
+  assert.deepEqual(serverFaults(loop).loop?.units, ['U1']);
 });

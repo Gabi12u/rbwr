@@ -43,6 +43,27 @@ export function special(demand) {
   return SPECIAL_DEMANDS[String(Math.round(demand))] || { code: String(demand), label: `Status ${demand}`, tone: 'caution' };
 }
 
+// SCRAMreason / TRIPreason keep the last reason after the unit is reset,
+// so they're reported as "last scram", not as an active fault.
+function reason(value) {
+  if (typeof value !== 'string') return null;
+  const v = value.trim();
+  return v && v !== 'No Reason Given' ? v : null;
+}
+
+function readFaults(raw) {
+  return {
+    scram: raw['Reactor Scram State'] === true,
+    turbineTrip: raw.TurbineTrip === true,
+    offsiteLost: raw['Offsite Power'] === false,
+    ruptureDisk: raw['Disk Ruptured'] === true,
+    turbineHealth: num(raw.TurbineHealth),
+    dieselRunning: (num(raw.DieselRPM) ?? 0) > 100,
+    lastScram: reason(raw.SCRAMreason),
+    lastTrip: reason(raw.TRIPreason),
+  };
+}
+
 function readUnit(raw, n) {
   if (!raw || typeof raw !== 'object') return null;
   return {
@@ -50,7 +71,39 @@ function readUnit(raw, n) {
     next: pick(raw, [`NextDemandU${n}`, 'NextDemand', 'Next Demand', 'next_demand']),
     timeLeft: pick(raw, ['Demand Time Left', 'DemandTimeLeft', 'dtl']),
     output: pick(raw, ['Output (MW)', 'PradDoSieci', 'Output', 'Power', 'megawatts']),
+    faults: readFaults(raw),
   };
+}
+
+// Fault types shown on each server panel and on the alarm panel.
+export const FAULTS = [
+  { key: 'scram', label: 'Reactor scram', tone: 'red' },
+  { key: 'trip', label: 'Turbine trip', tone: 'red' },
+  { key: 'loop', label: 'Offsite power lost', tone: 'red' },
+  { key: 'disk', label: 'Rupture disk', tone: 'red' },
+  { key: 'fire', label: 'Fire alarm', tone: 'red' },
+  { key: 'turbdmg', label: 'Turbine damage', tone: 'amber' },
+];
+
+/** Active faults of a server: { [key]: { units: ['U1','U2'], detail } } */
+export function serverFaults(server) {
+  const out = {};
+  const add = (key, unit, detail = null) => {
+    if (!out[key]) out[key] = { units: [], details: [] };
+    if (unit && !out[key].units.includes(unit)) out[key].units.push(unit);
+    if (detail) out[key].details.push(detail);
+  };
+  for (const [name, unit] of [['U1', server.units.u1], ['U2', server.units.u2]]) {
+    const f = unit?.faults;
+    if (!f) continue;
+    if (f.scram) add('scram', name, f.lastScram);
+    if (f.turbineTrip) add('trip', name, f.lastTrip);
+    if (f.offsiteLost || unit.demand === -2) add('loop', name);
+    if (f.ruptureDisk) add('disk', name);
+    if (f.turbineHealth !== null && f.turbineHealth < 100) add('turbdmg', name, `${Math.round(f.turbineHealth)} %`);
+  }
+  if (server.fire) add('fire', null);
+  return out;
 }
 
 function isOwnerSet(owner) {
@@ -111,6 +164,7 @@ export function normalize(raw, roblox = null) {
       players: info ? num(info.playing) : null,
       maxPlayers: info ? num(info.maxPlayers) : null,
       pointsPerSecond: pick(state.Misc, ['Total points/second']),
+      fire: Boolean(state.Misc && state.Misc['FSS Smoke Detected'] === true),
     });
   }
 

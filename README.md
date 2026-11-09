@@ -2,16 +2,21 @@
 
 Live-Demand-Board für **Realistic Boiling Water Reactor Simulator (RBWR)** auf Roblox – als Ersatz für die nicht mehr erreichbare Seite `rbwr.waifly.com`.
 
-Für jeden RBWR-Server zeigt die Seite:
+Gestaltet wie der Kontrollraum im Spiel: beige Pulte, schwarze Schilder, Rundinstrumente mit mintgrünem Zifferblatt, rote 7-Segment-Anzeigen, Leuchtmelder-Tableau, Leuchtdrucktasten und Drehschalter.
 
-- aktuelle Demand von **Unit 1** und **Unit 2** (plus Summe)
-- die **nächste Demand** (→ Wert darunter)
-- **Countdown** bis zum nächsten Demand-Wechsel (sekundengenau; der Balken zeigt die 20 Minuten einer Demand, unter 5 Minuten wird er gelb, unter 1 Minute rot)
-- Sonderzustände als Leuchtmelder: `Maint` (Wartung), `LOOP` (Loss of Offsite Power), `RST`, `Evac` (Evakuierung)
-- aktuelle Leistung (Output MW) pro Unit bzw. „Not generating", Spieler, privat/öffentlich, „Join"-Button
-- Gesamtleistung aller Server oben in den Anzeigen (Summe der aktuellen Outputs)
+Jeder Server bekommt ein eigenes Pult mit:
 
-Dazu: Suche nach Server-ID (z. B. `7b4f-4460` – die kurze ID aus dem Spiel – oder die volle Job-ID), Sortierung (nächster Wechsel / höchste Demand / meiste Spieler), private Server ausblenden, Server mit ☆ oben anpinnen, Klick auf die Server-ID kopiert die volle Job-ID. Links wie `/?q=7b4f-4460` öffnen direkt gefiltert.
+- **zwei Rundinstrumenten** (Unit 1 / Unit 2): Zeiger = aktueller Output, rote Marke + grünes Band = Demand
+- **Demand** als rote LED-Anzeige, **nächste Demand** als gelbe LED
+- **Countdown** bis zum Wechsel als LED + Zeigerinstrument über die 20 Minuten einer Demand (gelbe Zone unter 5 min, rote unter 1 min)
+- **Lampen**: grün = Server meldet sich, gelb = Wechsel in < 5 min, rot = Wechsel in < 1 min (Countdown blinkt)
+- **Störmelde-Tableau**: Reactor Scram, Turbine Trip, Offsite Power Lost, Rupture Disk, Fire Alarm, Turbine Damage (mit % und Unit), dazu der letzte Scram- und Trip-Grund und ob der Notstromdiesel läuft
+- Sonderzustände `Maint`, `LOOP`, `RST`, `Evac` als Leuchtmelder statt Zahl
+- Spieler, privat/öffentlich, grüner **Join**-Knopf bzw. rotes „Private"-Schild
+
+Oben: **Alarm-Panel** über alle Server (API-Verbindung, Demand-Wechsel < 5 / < 1 min, angepinnter Server < 1 min, Scram, Turbine Trip, Offsite Power, Rupture Disk, Feuer, Maint, Evac). Neue Meldungen blinken, bis man **ACK** drückt. Daneben LED-Anzeigen für Server, Spieler und die Gesamtleistung beider Units.
+
+Bedienung: Suche nach Server-ID (z. B. `7b4f-4460` – die kurze ID aus dem Spiel – oder die volle Job-ID), Sortier-Tasten (nächster Wechsel / Demand / Spieler), Drehschalter „All / Public", Server mit **Pin** oben festhalten, Klick auf die Server-ID kopiert die volle Job-ID. Links wie `/?q=7b4f-4460` öffnen direkt gefiltert. Im Dark Mode werden die Pulte dunkel („Nachtschicht"), die Instrumente leuchten weiter.
 
 ## Woher kommen die Daten?
 
@@ -21,10 +26,11 @@ Dazu: Suche nach Server-ID (z. B. `7b4f-4460` – die kurze ID aus dem Spiel –
 Was die echten Daten zeigen (geprüft am 9. 11. 2026):
 
 - Eine Demand gilt **20 Minuten**; Unit 1 und Unit 2 haben fast immer dieselbe Demand (meist 500–1100 MW in 10er-Schritten, `0` direkt nach Serverstart).
-- Server melden sich etwa alle **30 Sekunden**; der Countdown läuft dazwischen im Browser weiter.
+- Die Daten der API sind meist **30–90 Sekunden** alt; der Countdown läuft dazwischen im Browser weiter. Ist er abgelaufen, bevor der Server sich neu meldet, zeigt die Seite schon die neue Demand (vorher „Next") und zählt die nächsten 20 Minuten – markiert mit „New demand, report pending".
 - Units, die nicht laufen, melden einen leicht negativen Output (Eigenverbrauch) → „Not generating".
 - Server mit Besitzer sind privat („Invite only"); Server ohne Besitzer, die nicht in Roblox' öffentlicher Liste stehen, heißen „Not public".
-- Negative Demand-Werte sind Sonderzustände: `-1` Maint, `-2` LOOP, `-3` RST, `-4` Evac (Kodierung aus anderen Community-Tools).
+- Negative Demand-Werte sind Sonderzustände: `-1` Maint, `-2` LOOP, `-3` RST, `-4` Evac (Kodierung aus anderen Community-Tools; `-1` taucht in echten Daten auf).
+- **Störungen:** Die API liefert pro Unit `Reactor Scram State`, `TurbineTrip`, `Offsite Power`, `Disk Ruptured` (nur U2), `TurbineHealth` (nur U2), `DieselRPM` sowie `SCRAMreason`/`TRIPreason` (bleiben nach dem Reset stehen → „Last scram") und pro Server `FSS Smoke Detected`. Zufällige Geräte-Malfunctions (z. B. Feedwater- oder Druck-Malfs) stehen **nicht** in der API.
 
 Die API sendet **keine CORS-Header**, der Browser darf sie also nicht direkt abfragen. Deshalb holt `server.js` die Daten (höchstens alle 15 Sekunden, egal wie viele Leute die Seite offen haben) und gibt sie unter `/api/servers` an die Seite weiter.
 
@@ -64,6 +70,7 @@ npm test           # Tests für das Einlesen der API-Daten
 server.js            Webserver + API-Proxy mit Cache (keine Abhängigkeiten)
 public/index.html    Seite
 public/css/style.css Kontrollraum-Design (hell + dunkel)
+public/fonts/        DSEG7 (7-Segment) und Barlow, selbst gehostet (SIL Open Font License)
 public/js/app.js     Laden, Sortieren, Suche, Countdown
 public/js/model.js   Einlesen der API-Daten (Feldnamen, Sonderwerte, Server-ID)
 public/js/demo.js    Demo-Daten im exakten API-Format
