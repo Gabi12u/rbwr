@@ -1,6 +1,8 @@
-// Fake data in exactly the upstream API format. Used by `npm run demo`
-// (server side) and by opening the page with ?demo (browser side), so the
-// board can be tried out without a connection to the RBWR API.
+// Fake data in exactly the upstream API format, modelled on real responses:
+// demands last 20 minutes, both units usually share the same demand (500 to
+// 1100 MW in steps of 10), heartbeats arrive every ~30 s, units that aren't
+// running report a small negative output, and many servers are private.
+// Used by `npm run demo` (server side) and by opening the page with ?demo.
 
 const JOB_IDS = [
   '3f2a9c41-7b4f-4460-9a1e-2c6d8e0f1a23',
@@ -13,9 +15,16 @@ const JOB_IDS = [
   '4e1bd348-a07e-4c2b-94f6-1e5c8a9b0a9a',
   'f02ce459-3b8f-4d3c-a507-2f6d9bac1bab',
   '6a3df56a-b19a-4e4d-b618-3a7eacbd2cbc',
+  '81e4a67b-5c2d-4f90-a729-4b8fbdce3dcd',
+  'd7f5b78c-e83a-4a1b-b83a-5c90cedf4ede',
 ];
 
-const PRIVATE_INDEX = 6;
+const PERIOD_S = 1200;
+const OWNED = new Set([1, 3, 6, 9, 11]); // private servers with an owner
+const UNLISTED = 10;                       // no owner, but not in the public list
+const STARTING = 11;                       // just started, no state yet
+const MAINT = 7;
+const LOOP = 8;
 
 function hash(...values) {
   let h = 2166136261;
@@ -27,75 +36,82 @@ function hash(...values) {
   return h >>> 0;
 }
 
-function demandFor(server, unit, cycle) {
-  if (server === 4 && unit === 2) return -1; // unit in maintenance
-  if (server === 8) return -2; // loss of offsite power on both units
-  const h = hash(server, unit, cycle);
-  if (h % 41 === 0) return -1;
-  const [lo, hi] = unit === 1 ? [300, 1000] : [200, 700];
-  return lo + (h % ((hi - lo) / 10 + 1)) * 10;
+function demandFor(server, cycle) {
+  if (server === MAINT) return -1;
+  if (server === LOOP) return -2;
+  return 500 + (hash(server, cycle) % 61) * 10;
 }
 
-function outputFor(demand, server, unit, tick) {
-  if (demand < 0) return 0;
-  return Math.max(0, demand + (hash(server, unit, tick) % 41) - 20);
+// Which units are actually generating on this server
+const U1_IDLE = new Set([0, 5]);
+const U2_RUNNING = new Set([0, 2, 4, 6, 10]);
+
+function running(server, unit) {
+  return unit === 1 ? !U1_IDLE.has(server) : U2_RUNNING.has(server);
+}
+
+function outputFor(server, unit, demand, tick) {
+  if (demand <= 0 || !running(server, unit)) return -(2 + (hash(server, unit) % 25)) / 1.3;
+  return demand + (hash(server, unit, tick) % 41) - 20 + (hash(server, unit, tick, 7) % 100) / 100;
 }
 
 export function demoPayload(now = Date.now()) {
-  let grid1 = 0;
-  let grid2 = 0;
   const servers = JOB_IDS.map((jobId, i) => {
-    const heartbeat = now - (2000 + (hash(i, 1) % 35) * 1000);
-    const period = 480 + (hash(i, 2) % 6) * 60;
-    const t = heartbeat / 1000 + (hash(i, 3) % period);
-    const cycle = Math.floor(t / period);
-    const left = Math.round((period - (t - cycle * period)) * 10) / 10;
-    const tick = Math.floor(heartbeat / 30000);
-
-    const d1 = demandFor(i, 1, cycle);
-    const d2 = demandFor(i, 2, cycle);
-    const o1 = outputFor(d1, i, 1, tick);
-    const o2 = outputFor(d2, i, 2, tick);
-    grid1 += o1;
-    grid2 += o2;
-
-    return {
+    const heartbeat = now - (3000 + (hash(i, 1) % 30) * 1000);
+    const base = {
+      id: `${jobId.slice(0, 8)}-0000-4000-8000-${jobId.slice(-12)}`,
       jobId,
       lastHeartbeat: new Date(heartbeat).toISOString(),
-      privateServerOwnerId: i === PRIVATE_INDEX ? 123456789 : null,
+      privateServerOwnerId: OWNED.has(i) ? 100000000 + hash(i, 5) % 900000000 : null,
+    };
+    if (i === STARTING) return { ...base, state: {} };
+
+    const t = Math.floor(heartbeat / 1000) + (hash(i, 3) % PERIOD_S);
+    const cycle = Math.floor(t / PERIOD_S);
+    const left = PERIOD_S - (t - cycle * PERIOD_S);
+    const tick = Math.floor(heartbeat / 30000);
+
+    const demand = demandFor(i, cycle);
+    const next = demandFor(i, cycle + 1);
+    const o1 = outputFor(i, 1, demand, tick);
+    const o2 = outputFor(i, 2, demand, tick);
+    const pps1 = o1 > 0 ? 1.2 : 0;
+    const pps2 = o2 > 0 ? 1.7 : 0;
+
+    return {
+      ...base,
       state: {
         Unit1: {
-          DemandU1: d1,
-          NextDemandU1: demandFor(i, 1, cycle + 1),
+          DemandU1: demand,
+          NextDemandU1: next,
           'Demand Time Left': left,
           'Output (MW)': o1,
-          APRM: d1 > 0 ? Math.round((d1 / 11.2) * 10) / 10 : 0,
+          APRM: o1 > 0 ? Math.round(o1 / 11.6 * 10) / 10 : 0,
+          PointsPerSecond: pps1,
+          'Offsite Power': i !== LOOP,
         },
         Unit2: {
-          DemandU2: d2,
-          NextDemandU2: demandFor(i, 2, cycle + 1),
+          DemandU2: demand,
+          NextDemandU2: next,
           'Demand Time Left': left,
           PradDoSieci: o2,
-          APRM: d2 > 0 ? Math.round((d2 / 7.9) * 10) / 10 : 0,
+          APRM: o2 > 0 ? Math.round(o2 / 11.2 * 10) / 10 : 0,
+          PointsPerSecond: pps2,
+          'Offsite Power': i !== LOOP,
         },
-        Misc: { 'Total points/second': Math.round(((o1 + o2) / 600) * 100) / 100 },
+        Misc: { 'Total points/second': pps1 + pps2 },
       },
     };
   });
 
-  return {
-    data: {
-      servers,
-      stats: { unit1: { megawatts: grid1 }, unit2: { megawatts: grid2 } },
-    },
-  };
+  return { success: true, data: { servers, stats: { unit1: { megawatts: 0 }, unit2: { megawatts: 0 } } } };
 }
 
 export function demoRoblox(now = Date.now()) {
   const servers = {};
   JOB_IDS.forEach((jobId, i) => {
-    if (i === PRIVATE_INDEX) return;
-    servers[jobId] = { playing: 1 + (hash(i, Math.floor(now / 120000)) % 12), maxPlayers: 12 };
+    if (OWNED.has(i) || i === UNLISTED) return;
+    servers[jobId] = { playing: 3 + (hash(i, Math.floor(now / 120000)) % 10), maxPlayers: 12 };
   });
   return { complete: true, servers };
 }

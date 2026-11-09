@@ -95,8 +95,10 @@ export function normalize(raw, roblox = null) {
     const heartbeat = Date.parse(s.lastHeartbeat);
     const info = publicInfo ? publicInfo[jobId] : null;
 
-    let isPrivate = isOwnerSet(s.privateServerOwnerId);
-    if (!isPrivate && roblox && roblox.complete && publicInfo && !info) isPrivate = true;
+    // 'owner': a private server someone owns. 'unlisted': no owner, but missing
+    // from Roblox's complete public list (e.g. reserved servers), so not joinable.
+    let privateKind = isOwnerSet(s.privateServerOwnerId) ? 'owner' : null;
+    if (!privateKind && roblox && roblox.complete && publicInfo && !info) privateKind = 'unlisted';
 
     servers.push({
       jobId,
@@ -104,19 +106,22 @@ export function normalize(raw, roblox = null) {
       heartbeat: Number.isFinite(heartbeat) ? heartbeat : null,
       timeLeft: u1?.timeLeft ?? u2?.timeLeft ?? null,
       units: { u1, u2 },
-      isPrivate,
+      isPrivate: privateKind !== null,
+      privateKind,
       players: info ? num(info.playing) : null,
       maxPlayers: info ? num(info.maxPlayers) : null,
       pointsPerSecond: pick(state.Misc, ['Total points/second']),
     });
   }
 
-  const stats = data.stats && typeof data.stats === 'object' ? data.stats : {};
+  // The API's own stats don't add up to the servers' outputs, so the board
+  // sums the current output of every unit itself (non-running units count 0).
+  const sumOutput = (key) => servers.reduce((sum, s) => sum + Math.max(0, s.units[key]?.output ?? 0), 0);
   return {
     servers,
     grid: {
-      u1: pick(stats.unit1, ['megawatts']),
-      u2: pick(stats.unit2, ['megawatts']),
+      u1: servers.length ? sumOutput('u1') : null,
+      u2: servers.length ? sumOutput('u2') : null,
     },
   };
 }

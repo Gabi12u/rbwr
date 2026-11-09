@@ -580,13 +580,13 @@ tr.is-stale td:not(.c-pin) { opacity: 0.55; }
   background: var(--ink-soft);
 }
 
-/* 5:00 tick on a 10 minute scale */
+/* 5:00 tick on the 20 minute demand scale */
 .bar::after {
   content: "";
   position: absolute;
   top: 0;
   bottom: 0;
-  left: 50%;
+  left: 25%;
   width: 1px;
   background: var(--panel-face);
 }

@@ -4,18 +4,13 @@ import {
 
 const REFRESH_MS = 15000;
 const STALE_HEARTBEAT_S = 180;
-const BAR_SCALE_S = 600; // countdown bar covers the last 10 minutes
+const BAR_SCALE_S = 1200; // a demand lasts 20 minutes in RBWR
 const SOON_S = 300;
 const DUE_S = 60;
 const PIN_KEY = 'rbwr-demands:pinned';
 const SORT_KEY = 'rbwr-demands:sort';
 const PUBLIC_KEY = 'rbwr-demands:public-only';
-
-// Used when the page is hosted without server.js (e.g. GitHub Pages).
-const DIRECT_UPSTREAMS = [
-  'https://hydrogen.realisticbwr.org/api/public/servers',
-  'https://realisticbwr.org/api/public/servers',
-];
+const NO_PROXY = 'no-proxy';
 
 const params = new URLSearchParams(location.search);
 const DEMO = params.has('demo');
@@ -109,26 +104,15 @@ function heartbeatAge(server) {
 
 // ---- data loading ------------------------------------------------------------
 
+// The RBWR API sends no CORS headers, so browsers can't call it directly;
+// server.js fetches it and serves it at /api/servers.
 async function fetchProxy() {
   const res = await fetch('api/servers', { cache: 'no-store' });
   const type = res.headers.get('content-type') || '';
-  if (!type.includes('application/json')) return null; // static hosting, no proxy
+  if (!type.includes('application/json')) throw new Error(NO_PROXY);
   const body = await res.json();
   if (!res.ok || !body.ok) throw new Error(body.error || `HTTP ${res.status}`);
   return body;
-}
-
-async function fetchDirect() {
-  let lastError = null;
-  for (const url of DIRECT_UPSTREAMS) {
-    try {
-      const res = await fetch(url, { cache: 'no-store' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const upstream = await res.json();
-      return { ok: true, upstream, roblox: null, now: Date.now() };
-    } catch (err) { lastError = err; }
-  }
-  throw lastError || new Error('No API reachable');
 }
 
 async function fetchDemo() {
@@ -142,18 +126,7 @@ async function load() {
   if (loading) return;
   loading = true;
   try {
-    let body;
-    if (state.mode === 'demo') body = await fetchDemo();
-    else if (state.mode === 'proxy') {
-      try {
-        body = await fetchProxy();
-      } catch (err) {
-        if (!(err instanceof TypeError)) throw err; // proxy answered with an error
-        body = null;                                // network error: maybe file:// or static host
-      }
-      if (body === null) { state.mode = 'direct'; body = await fetchDirect(); }
-    } else body = await fetchDirect();
-
+    const body = state.mode === 'demo' ? await fetchDemo() : await fetchProxy();
     if (body.source === 'demo') state.mode = 'demo';
     state.data = normalize(body.upstream, body.roblox);
     state.receivedAt = Date.now();
@@ -162,7 +135,6 @@ async function load() {
     state.error = body.stale ? body.error || 'API not answering' : null;
   } catch (err) {
     state.error = err.message || String(err);
-    if (state.mode === 'direct' && !DEMO) state.mode = 'proxy'; // try the proxy again next time
   } finally {
     loading = false;
     render();
@@ -182,7 +154,7 @@ function demandView(value, { big }) {
 function unitCell(unit, cls, label) {
   const td = h('td', { class: `c-unit ${cls}`, 'data-label': label });
   if (!unit) {
-    td.append(h('span', { class: 'meta' }, 'No data'));
+    td.append(h('span', { class: 'meta' }, 'No data yet'));
     return td;
   }
   td.append(h('div', { class: 'readout' }, demandView(unit.demand, { big: true })));
@@ -194,8 +166,11 @@ function unitCell(unit, cls, label) {
       demandView(unit.next, { big: false }),
       special(unit.next) ? null : ' MW'));
   }
-  if (unit.output !== null && !(unit.demand !== null && unit.demand < 0 && unit.output === 0)) {
+  // Units that aren't running report a small negative output (their own house load).
+  if (unit.output !== null && unit.output >= 0.5) {
     td.append(h('div', { class: 'out' }, `Output ${fmtMW(unit.output)} MW`));
+  } else if (unit.output !== null) {
+    td.append(h('div', { class: 'out' }, 'Not generating'));
   }
   return td;
 }
@@ -232,7 +207,8 @@ function serverCell(server) {
   td.append(h('button', {
     class: 'sid', type: 'button', title: `Copy job ID ${server.jobId}`, 'data-copy': server.jobId,
   }, server.shortId));
-  if (server.isPrivate) td.append(h('span', { class: 'meta' }, 'Private server'));
+  if (server.privateKind === 'owner') td.append(h('span', { class: 'meta' }, 'Private server'));
+  else if (server.privateKind === 'unlisted') td.append(h('span', { class: 'meta', title: 'Not in Roblox’s public server list' }, 'Not public'));
   else if (server.players !== null) {
     td.append(h('span', { class: 'meta' }, `${server.players}${server.maxPlayers ? ` / ${server.maxPlayers}` : ''} players`));
   }
@@ -255,7 +231,7 @@ function rowFor(server) {
     totalCell(server),
     timeCell(server),
     h('td', { class: 'c-join' }, server.isPrivate
-      ? h('span', { class: 'no-join' }, 'Invite only')
+      ? h('span', { class: 'no-join' }, server.privateKind === 'owner' ? 'Invite only' : 'Can’t join')
       : h('a', { class: 'join', href: joinUrl(server.jobId), target: '_blank', rel: 'noopener' }, 'Join')),
   );
   return tr;
@@ -310,7 +286,9 @@ function renderRows() {
   const d = state.data;
   if (!d) {
     els.rows.replaceChildren();
-    if (state.error) {
+    if (state.error === NO_PROXY) {
+      showEmpty(h('p', {}, 'This page loads demands through its own server. Start it with “npm start” and open the address it prints.'));
+    } else if (state.error) {
       showEmpty(
         h('p', {}, 'The RBWR server API isn’t answering, so there are no demands to show yet. The board retries every 15 seconds.'),
         h('p', {}, h('button', { type: 'button', 'data-action': 'retry' }, 'Retry now')),
@@ -337,7 +315,7 @@ function renderRows() {
     );
   } else {
     showEmpty(
-      h('p', {}, 'All reporting servers are private.'),
+      h('p', {}, 'None of the reporting servers are public right now.'),
       h('p', {}, h('button', { type: 'button', 'data-action': 'show-private' }, 'Show private servers')),
     );
   }
@@ -356,6 +334,9 @@ function renderStatus() {
   } else if (state.data) {
     s = 'live';
     text = `Live, updated ${ago} ago`;
+  } else if (state.error === NO_PROXY) {
+    s = 'error';
+    text = 'Server not running';
   } else if (state.error) {
     s = 'error';
     text = 'Can’t reach the RBWR server API. Retrying every 15 seconds.';
