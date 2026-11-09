@@ -732,20 +732,6 @@ a { color: inherit; text-underline-offset: 0.2em; }
   gap: 0.35rem;
 }
 
-.unit-demand { display: flex; align-items: center; min-height: 2.05rem; }
-
-.unit-next {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  font-family: var(--cond);
-  font-size: 0.75rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--ink-soft);
-}
-
 .unit-out { font-size: 0.8125rem; color: var(--ink); }
 .unit-out.is-idle { color: var(--ink-soft); }
 
@@ -794,6 +780,65 @@ a { color: inherit; text-underline-offset: 0.2em; }
   .dial-pointer { transition: transform 0.6s ease, opacity 0.3s ease; }
 }
 
+/* Demand box: demand now ▶ next demand, and the countdown */
+.dem-box {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  padding: 0.8rem 0.85rem 0.85rem;
+  background: var(--bezel);
+  border: 2px solid #0b0b0b;
+  border-radius: 6px;
+  box-shadow: inset 0 1px 0 var(--bezel-hi), 0 2px 0 rgb(255 255 255 / 0.25);
+}
+
+.dem-label {
+  font-family: var(--cond);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgb(255 255 255 / 0.78);
+}
+
+.dem-grid {
+  display: grid;
+  grid-template-columns: auto auto auto auto;
+  justify-content: start;
+  align-items: center;
+  row-gap: 0.4rem;
+}
+
+.dem-label-now { grid-column: 2; }
+.dem-label-next { grid-column: 4; }
+.dem-unit { grid-column: 1; }
+.dem-now { grid-column: 2; }
+.dem-arrow { grid-column: 3; }
+.dem-next { grid-column: 4; }
+
+.dem-now,
+.dem-next { display: inline-flex; }
+
+.dem-arrow {
+  padding: 0 0.7rem;
+  color: var(--led-amber);
+  font-size: 1.1rem;
+  text-shadow: 0 0 0.4em rgb(255 173 31 / 0.6);
+}
+
+.dem-unit {
+  margin-right: 0.6rem;
+  white-space: nowrap;
+  font-family: var(--cond);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #fff;
+}
+
+.dem-grid .led-lg { font-size: 1.9rem; }
+
 /* Countdown */
 .mod-timer {
   display: grid;
@@ -817,10 +862,10 @@ a { color: inherit; text-underline-offset: 0.2em; }
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--ink-soft);
+  color: rgb(255 255 255 / 0.7);
 }
 
-.module.is-due .timer-note { color: var(--danger); }
+.module.is-due .timer-note { color: var(--lamp-r); }
 
 @media (prefers-reduced-motion: no-preference) {
   .module.is-due .mod-timer .led-lit { animation: led-blink 1s steps(2, jump-none) infinite; }
@@ -895,8 +940,8 @@ a { color: inherit; text-underline-offset: 0.2em; }
 }
 
 /* The countdown passed but the server hasn't reported the change yet */
-.module.is-projected .unit-demand .led-lit { opacity: 0.75; }
-.module.is-projected .timer-note { color: var(--ink); }
+.module.is-projected .dem-now .led-lit { opacity: 0.75; }
+.module.is-projected .timer-note { color: #fff; }
 
 /* Footer of a module */
 .mod-foot {
@@ -974,13 +1019,6 @@ a { color: inherit; text-underline-offset: 0.2em; }
   text-transform: uppercase;
 }
 
-.annun-sm {
-  min-width: 3.6em;
-  padding: 0.1em 0.4em;
-  border-width: 1px;
-  font-size: 0.75rem;
-}
-
 .annun.tone-caution { background: radial-gradient(ellipse, #fff3c4, var(--ann-amber)); color: #1a1410; box-shadow: 0 0 0.6rem rgb(246 220 122 / 0.6); }
 .annun.tone-alarm { background: radial-gradient(ellipse, #ff8a7f, var(--ann-red)); color: #fff; box-shadow: 0 0 0.6rem rgb(239 59 47 / 0.6); }
 
@@ -1016,4 +1054,6 @@ a { color: inherit; text-underline-offset: 0.2em; }
   .mod-units { gap: 0.5rem; }
   .led-md { font-size: 1.05rem; }
   .led-lg { font-size: 1.45rem; }
+  .dem-grid .led-lg { font-size: 1.55rem; }
+  .dem-arrow { padding: 0 0.45rem; }
 }

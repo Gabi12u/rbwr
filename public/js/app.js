@@ -261,21 +261,44 @@ function edgewise() {
 
 // ---- server modules ----------------------------------------------------------
 
-function unitBlock(label, n) {
+function unitBlock(label) {
   const g = gauge(label);
-  const demand = led('md', '8888');
-  const next = led('sm', '8888', 'led-amber');
-  const nextAnno = h('span', { class: 'annun annun-sm', hidden: true });
-  const anno = h('span', { class: 'annun', hidden: true });
   const out = h('span', { class: 'unit-out' });
-  const el = h('figure', { class: 'unit' },
-    g.svg,
-    h('figcaption', { class: 'unit-read' },
-      h('span', { class: 'tag tag-sm' }, `Unit ${n} demand`),
-      h('span', { class: 'unit-demand' }, demand.el, anno),
-      h('span', { class: 'unit-next' }, h('span', { class: 'unit-next-label' }, 'Next'), next.el, nextAnno),
-      out));
-  return { el, g, demand, next, nextAnno, anno, out };
+  const el = h('figure', { class: 'unit' }, g.svg, h('figcaption', { class: 'unit-read' }, out));
+  return { el, g, out };
+}
+
+// A demand as a 7-segment LED, or as a lit tile for special states (Maint, LOOP …).
+function demandReadout(value, { amber = false, title = '' } = {}) {
+  const sp = special(value);
+  if (sp) return h('span', { class: `annun tone-${sp.tone}`, title: sp.label }, sp.code);
+  const l = led('lg', '8888', amber ? 'led-amber' : '');
+  l.lit.textContent = value === null || value === undefined ? '----' : fmtMW(value);
+  if (title) l.el.title = title;
+  return l.el;
+}
+
+// "Demand now ▶ Next demand": one row when both units share the demand
+// (almost always), one row per unit when they differ.
+function updateDemand(rows, v, projected) {
+  const d1 = v.units.u1?.demand ?? null;
+  const d2 = v.units.u2?.demand ?? null;
+  const n1 = v.units.u1?.next ?? null;
+  const n2 = v.units.u2?.next ?? null;
+  const same = d1 === d2 && n1 === n2;
+  const nextTitle = projected ? 'Known after the server’s next report' : '';
+  const row = (unit, d, n) => [
+    unit ? h('span', { class: 'dem-unit' }, unit) : null,
+    h('span', { class: 'dem-now' }, demandReadout(d)),
+    h('span', { class: 'dem-arrow', 'aria-hidden': 'true' }, '▶'),
+    h('span', { class: 'dem-next' }, demandReadout(n, { amber: true, title: nextTitle })),
+  ];
+  const cells = [
+    h('span', { class: 'dem-label dem-label-now' }, 'Demand now [MW]'),
+    h('span', { class: 'dem-label dem-label-next' }, 'Next demand [MW]'),
+    ...(same ? row(null, d1, n1) : [...row('U1', d1, n1), ...row('U2', d2, n2)]),
+  ];
+  rows.replaceChildren(...cells.filter(Boolean));
 }
 
 function createModule(server) {
@@ -287,8 +310,9 @@ function createModule(server) {
   const pin = h('button', { class: 'pushbtn pin', type: 'button', 'data-pin': server.jobId }, h('i', { class: 'key-lamp' }), 'Pin');
   const who = h('span', { class: 'mod-who' });
   const seen = h('span', { class: 'mod-seen' });
-  const u1 = unitBlock('UNIT 1 MWe', 1);
-  const u2 = unitBlock('UNIT 2 MWe', 2);
+  const u1 = unitBlock('UNIT 1 MWe');
+  const u2 = unitBlock('UNIT 2 MWe');
+  const demandRows = h('div', { class: 'dem-grid' });
   const count = led('lg', '88:88');
   const edge = edgewise();
   const due = h('span', { class: 'timer-note' });
@@ -305,44 +329,21 @@ function createModule(server) {
   const el = h('li', { class: 'module', 'data-id': server.jobId },
     h('div', { class: 'mod-head' }, id, lamps, pin),
     h('p', { class: 'mod-meta' }, who, seen),
+    h('section', { class: 'dem-box', 'aria-label': 'Demand' },
+      demandRows,
+      h('div', { class: 'mod-timer' },
+        h('div', { class: 'timer-read' }, h('span', { class: 'dem-label' }, 'Changes in'), count.el, due),
+        edge.svg)),
     h('div', { class: 'mod-units' }, u1.el, u2.el),
-    h('div', { class: 'mod-timer' },
-      h('div', { class: 'timer-read' }, h('span', { class: 'tag tag-sm' }, 'Next change in'), count.el, due),
-      edge.svg),
     faults,
     events,
     h('div', { class: 'mod-foot' }, total, action));
 
-  return { el, refs: { lampG, lampY, lampR, lamps, id, pin, who, seen, u1, u2, count, edge, due, total, action, faultTiles, events } };
+  return { el, refs: { lampG, lampY, lampR, lamps, id, pin, who, seen, u1, u2, demandRows, count, edge, due, total, action, faultTiles, events } };
 }
 
-function updateUnit(block, unit, projected) {
-  const demand = unit?.demand ?? null;
-  const sp = special(demand);
-  block.anno.hidden = !sp;
-  block.demand.el.hidden = Boolean(sp);
-  if (sp) {
-    block.anno.textContent = sp.code;
-    block.anno.title = sp.label;
-    block.anno.className = `annun tone-${sp.tone}`;
-  } else {
-    block.demand.lit.textContent = demand === null ? '----' : fmtMW(demand);
-  }
-
-  const next = unit?.next ?? null;
-  const nextSp = special(next);
-  block.nextAnno.hidden = !nextSp;
-  block.next.el.hidden = Boolean(nextSp);
-  if (nextSp) {
-    block.nextAnno.textContent = nextSp.code;
-    block.nextAnno.title = nextSp.label;
-    block.nextAnno.className = `annun annun-sm tone-${nextSp.tone}`;
-  } else {
-    block.next.lit.textContent = next === null ? '----' : fmtMW(next);
-    block.next.el.title = projected ? 'Known after the server’s next report' : '';
-  }
-
-  // Units that aren't running report a small negative output (their own house load).
+// Units that aren't running report a small negative output (their own house load).
+function updateOutput(block, unit) {
   const out = unit?.output ?? null;
   block.out.textContent = out === null ? 'No data yet' : out >= 0.5 ? `Output ${fmtMW(out)} MW` : 'Not generating';
   block.out.classList.toggle('is-idle', !(out >= 0.5));
@@ -364,8 +365,9 @@ function updateModule(entry, server) {
   else if (server.players !== null) refs.who.textContent = `${server.players} / ${server.maxPlayers || 12} players`;
   else refs.who.textContent = 'Public server';
 
-  updateUnit(refs.u1, v.units.u1, t.phase === 'projected');
-  updateUnit(refs.u2, v.units.u2, t.phase === 'projected');
+  updateDemand(refs.demandRows, v, t.phase === 'projected');
+  updateOutput(refs.u1, v.units.u1);
+  updateOutput(refs.u2, v.units.u2);
 
   const total = totalDemand(v);
   const next = totalNext(v);

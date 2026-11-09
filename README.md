@@ -6,9 +6,9 @@ Gestaltet wie der Kontrollraum im Spiel: beige Pulte, schwarze Schilder, Rundins
 
 Jeder Server bekommt ein eigenes Pult mit:
 
-- **zwei Rundinstrumenten** (Unit 1 / Unit 2): Zeiger = aktueller Output, rote Marke + grünes Band = Demand
-- **Demand** als rote LED-Anzeige, **nächste Demand** als gelbe LED
-- **Countdown** bis zum Wechsel als LED + Zeigerinstrument über die 20 Minuten einer Demand (gelbe Zone unter 5 min, rote unter 1 min)
+- ganz oben, groß: **Demand jetzt ▶ nächste Demand** (rote und gelbe LED; eine Zeile, wenn beide Units dieselbe Demand haben, sonst je eine Zeile für U1 und U2)
+- direkt darunter: **„Changes in"** – Countdown bis zum Wechsel als LED + Zeigerinstrument über die 20 Minuten einer Demand (gelbe Zone unter 5 min, rote unter 1 min)
+- **zwei Rundinstrumente** (Unit 1 / Unit 2): Zeiger = aktueller Output, rote Marke + grünes Band = Demand
 - **Lampen**: grün = Server meldet sich, gelb = Wechsel in < 5 min, rot = Wechsel in < 1 min (Countdown blinkt)
 - **Störmelde-Tableau**: Reactor Scram, Turbine Trip, Offsite Power Lost, Rupture Disk, Fire Alarm, Turbine Damage (mit % und Unit), dazu der letzte Scram- und Trip-Grund und ob der Notstromdiesel läuft
 - Sonderzustände `Maint`, `LOOP`, `RST`, `Evac` als Leuchtmelder statt Zahl
